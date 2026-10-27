@@ -1,0 +1,161 @@
+# CI for the CulperLink Go SDK (CULPER-452).
+#
+# check     gofmt -s, go vet (linux, darwin, windows), go test -race, tidy
+# lint      golangci-lint, pinned to the version the CulperLink core pins
+# boundary  this repository holds no CulperLink core source: no import of the
+#           core's internal/ or pkg/culperlink-tunnel, no replace, no
+#           requirement beyond the standard library
+# e2e       the SDK against the real culperlink-tunnel daemon from a release
+#           package; manual, and only where the release can be fetched (below)
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'CulperLink release tag whose culperlink-tunnel the e2e job runs (e.g. v0.2.0)'
+        required: true
+        default: 'v0.2.0'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: gofmt, vet, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt -s
+        run: |
+          unformatted=$(gofmt -s -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::not gofmt -s clean:"; echo "$unformatted"; gofmt -s -d $unformatted; exit 1
+          fi
+      - name: go vet (every platform the module compiles for)
+        run: |
+          for os in linux darwin windows; do GOOS=$os go vet ./...; done
+      - name: go test -race
+        run: go test -race -count=1 ./...
+      - name: go.mod is tidy
+        run: go mod tidy -diff
+      - name: A tag names the library's Version and a changelog entry
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          grep -qx "const Version = \"$v\"" client.go || { echo "::error::client.go's Version is not $v"; exit 1; }
+          grep -q "^## $v " CHANGELOG.md || { echo "::error::CHANGELOG.md has no entry for $v"; exit 1; }
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          # Pinned, as in the CulperLink core: a floating linter lets an
+          # upstream release red the build with no change here.
+          version: v2.14.0
+          args: --timeout=10m
+
+  boundary:
+    name: No CulperLink core source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: No import of the core's internal/ or pkg/culperlink-tunnel
+        # The SDK is a client of the compiled daemon. A hit here means core
+        # source (the tunnel engine, or the cryptography under it) is being
+        # pulled into every customer's build — the thing CULPER-452 ended.
+        run: |
+          pattern='github\.com/culper-systems/culperlink/(internal|pkg/culperlink-tunnel)'
+          if grep -rInE "$pattern" --include='*.go' --include='go.mod' --include='go.sum' .; then
+            echo "::error::a file names the CulperLink core's internal/ or pkg/culperlink-tunnel"
+            exit 1
+          fi
+          if go list -deps -test ./... | grep -E "^${pattern}"; then
+            echo "::error::a package depends on the CulperLink core's internal/ or pkg/culperlink-tunnel"
+            exit 1
+          fi
+          echo "no import of the core's internal/ or pkg/culperlink-tunnel"
+      - name: No replace, no requirement beyond the standard library
+        run: |
+          if grep -nE '^\s*(replace|require)\b' go.mod; then
+            echo "::error::go.mod must carry no replace and no require; this library is the standard library only"
+            exit 1
+          fi
+          test ! -e go.sum || { echo "::error::go.sum exists, so something is required"; exit 1; }
+          [ "$(go list -m all)" = "$(go list -m)" ] || { go list -m all; echo "::error::the module graph is not this module alone"; exit 1; }
+
+  # The SDK against the real daemon. The daemon ships only inside a signed
+  # CulperLink release package (culperlink-<v>.tar.gz, a GitHub Release of
+  # Culper-Systems/culperlink-backend), so this job needs:
+  #   - a release to exist (none does until v0.2.0 is tagged), and
+  #   - the repository secret CULPERLINK_RELEASE_TOKEN: a fine-grained token
+  #     with read access to that repository's contents (releases), while it
+  #     is private.
+  # It runs on a manual dispatch naming the release, and on a tag of this
+  # repository (whose tag is the release version). Without the secret it
+  # warns and skips, so the workflow stays green before the first release.
+  e2e:
+    name: SDK against the release's culperlink-tunnel
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    env:
+      GH_TOKEN: ${{ secrets.CULPERLINK_RELEASE_TOKEN }}
+      RELEASE: ${{ github.event.inputs.release || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Skip without the release token
+        id: gate
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::CULPERLINK_RELEASE_TOKEN is not set; the e2e job cannot fetch the release package and skips"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        if: steps.gate.outputs.run == 'true'
+      - name: Download and verify the release package
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          v=${RELEASE#v}
+          mkdir -p "$RUNNER_TEMP/release" && cd "$RUNNER_TEMP/release"
+          gh release download "v$v" --repo Culper-Systems/culperlink-backend \
+            --pattern "culperlink-$v.tar.gz" --pattern "culperlink-$v.tar.gz.sigstore.json"
+          # docs/release/verifying-a-release.md, step 1: the release workflow on the tag.
+          cosign verify-blob \
+            --bundle "culperlink-$v.tar.gz.sigstore.json" \
+            --certificate-identity "https://github.com/Culper-Systems/culperlink-backend/.github/workflows/release.yml@refs/tags/v$v" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "culperlink-$v.tar.gz"
+          tar -xzf "culperlink-$v.tar.gz"
+          install -m 0755 "culperlink-$v/bin/culperlink-tunnel-linux-amd64" "$RUNNER_TEMP/culperlink-tunnel"
+          "$RUNNER_TEMP/culperlink-tunnel" -version
+      - name: The SDK drives the real daemon
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          CULPERLINK_TUNNEL_BIN="$RUNNER_TEMP/culperlink-tunnel" \
+            go test -race -count=1 -v -run 'RealDaemon' ./... | tee e2e.txt
+          if grep -q -- '--- SKIP' e2e.txt; then echo "::error::the e2e test skipped with the daemon present"; exit 1; fi
