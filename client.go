@@ -1,0 +1,364 @@
+package culperlink
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"sync"
+	"time"
+)
+
+// Version is this library's release version. Its tag in this repository is
+// v<Version>, the same as the CulperLink release it was published with.
+const Version = "0.2.0"
+
+// dataTokenHeader carries the Data Plane credential. It is a different header
+// from Authorization on purpose: a request that reaches the wrong plane fails
+// to authenticate rather than quietly succeeding.
+const dataTokenHeader = "X-Culper-Data-Token"
+
+// Client is the entry point. A Client is safe for concurrent use and should
+// be reused for the life of the process.
+type Client struct {
+	opts Options
+
+	httpClient *http.Client // the Control Plane's
+	session    *sessionState
+	tunnel     *tunnelState // nil in TunnelOff
+
+	mu     sync.RWMutex
+	closed bool
+}
+
+// Options configures a Client. APIKey and Endpoint are required.
+type Options struct {
+	// APIKey is the API key your installation issued. Required.
+	APIKey string
+
+	// Endpoint is the base URL of your CulperLink installation's Control
+	// Plane. Required; there is no default.
+	Endpoint string
+
+	// Timeout is the per-request timeout. Defaults to 30s.
+	Timeout time.Duration
+
+	// MaxRetries bounds the retries of a 5xx or a transport error. Defaults
+	// to 3.
+	MaxRetries int
+
+	// UserAgent defaults to "culperlink-go/<Version>".
+	UserAgent string
+
+	// TLS configures how the installation's certificate is verified: a
+	// private CA bundle, SPKI pinning and the TLS version floor. The zero
+	// value is the system trust store with a TLS 1.3 floor. Ignored when
+	// HTTPClient is set. Its CA bundle also anchors the node's handshake
+	// listener unless Tunnel.RootCAsPEM is set.
+	TLS TLSConfig
+
+	// HTTPClient, if set, carries Control Plane calls (and, in TunnelOff,
+	// Data Plane calls too). Prefer TLS for trust configuration.
+	HTTPClient *http.Client
+
+	// Tunnel configures the Data Plane transport. The zero value is
+	// TunnelNetstack through a culperlink-tunnel daemon found on PATH.
+	Tunnel TunnelOptions
+}
+
+// NewClient validates opts and applies defaults. It performs no network I/O
+// and starts no daemon; the first operation, or Connect, does.
+func NewClient(opts Options) (*Client, error) {
+	if opts.APIKey == "" {
+		return nil, ErrMissingAPIKey
+	}
+	if opts.Endpoint == "" {
+		return nil, ErrMissingEndpoint
+	}
+	if opts.Timeout == 0 {
+		opts.Timeout = 30 * time.Second
+	}
+	if opts.MaxRetries == 0 {
+		opts.MaxRetries = 3
+	}
+	if opts.UserAgent == "" {
+		opts.UserAgent = "culperlink-go/" + Version
+	}
+	switch opts.Tunnel.Mode {
+	case "":
+		opts.Tunnel.Mode = TunnelNetstack
+	case TunnelNetstack, TunnelSystem, TunnelOff:
+	default:
+		return nil, ErrInvalidTunnelMode
+	}
+
+	c := &Client{opts: opts, session: newSessionState()}
+
+	hc := opts.HTTPClient
+	if hc == nil {
+		if opts.TLS.isZero() {
+			hc = &http.Client{Timeout: opts.Timeout}
+		} else {
+			var err error
+			if hc, err = opts.TLS.httpClient(opts.Timeout); err != nil {
+				return nil, err
+			}
+		}
+	}
+	c.httpClient = hc
+
+	if opts.Tunnel.Mode != TunnelOff {
+		roots := opts.Tunnel.RootCAsPEM
+		if len(roots) == 0 {
+			var err error
+			if roots, err = opts.TLS.caPEM(); err != nil {
+				return nil, err
+			}
+		}
+		c.tunnel = newTunnelState(opts.Tunnel, roots, opts.Timeout)
+	}
+	return c, nil
+}
+
+// Connect authenticates and, unless Tunnel.Mode is TunnelOff, finds or starts
+// the daemon, selects a node and brings the tunnel up. Optional: the first
+// Encrypt or Decrypt does the same. Calling it at startup surfaces a bad API
+// key, a missing daemon (ErrTunnelDaemonNotFound), no compliant node
+// (ErrSovereignNodeUnavailable) or a refused handshake (ErrTunnelUnavailable)
+// before the first payload.
+func (c *Client) Connect(ctx context.Context) error {
+	if c.IsClosed() {
+		return ErrClientClosed
+	}
+	if err := c.session.ensureAuthenticated(ctx, c); err != nil {
+		return err
+	}
+	if c.tunnel == nil {
+		return nil
+	}
+	_, err := c.tunnel.ensure(ctx, c)
+	return err
+}
+
+// Close disconnects the tunnel, stops a daemon this client started, and
+// drops the session. Later calls return ErrClientClosed. Safe to call more
+// than once. The tunnel's lease lapses on the node at its TTL.
+func (c *Client) Close() error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil
+	}
+	c.closed = true
+	c.mu.Unlock()
+
+	var err error
+	if c.tunnel != nil {
+		err = c.tunnel.close()
+	}
+	c.session.clear()
+	return err
+}
+
+// Endpoint returns the configured Control Plane URL.
+func (c *Client) Endpoint() string { return c.opts.Endpoint }
+
+// IsClosed reports whether Close has been called.
+func (c *Client) IsClosed() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.closed
+}
+
+// plane says which credential a request carries and where it is addressed.
+// Those are two properties, not one: attest carries the data credential to
+// the Control Plane's address (CULPER-419).
+type plane int
+
+const (
+	controlPlane       plane = iota // session_token, to Options.Endpoint
+	dataPlane                       // data_token, through the tunnel
+	controlOnDataToken              // data_token, to Options.Endpoint: attest only
+)
+
+func (p plane) carriesDataToken() bool { return p == dataPlane || p == controlOnDataToken }
+
+// doRequest issues a Control Plane request on session_token.
+func (c *Client) doRequest(ctx context.Context, method, path string, body []byte, out any) error {
+	return c.send(ctx, controlPlane, method, path, body, out)
+}
+
+// doDataRequest issues a Data Plane request: data_token and NO
+// Authorization header, through the tunnel unless the mode is TunnelOff.
+func (c *Client) doDataRequest(ctx context.Context, method, path string, body []byte, out any) error {
+	return c.send(ctx, dataPlane, method, path, body, out)
+}
+
+// doControlRequestWithDataToken carries data_token to Options.Endpoint.
+// Attest is the only such operation; it is a separate name so that a call
+// site says both halves.
+func (c *Client) doControlRequestWithDataToken(ctx context.Context, method, path string, body []byte, out any) error {
+	return c.send(ctx, controlOnDataToken, method, path, body, out)
+}
+
+// target is one attempt's destination and the client that carries it.
+type target struct {
+	base   string
+	client *http.Client
+	// tunnelled is true when the attempt goes through the daemon's proxy, so
+	// a failure is reported to the daemon and a proxy 502 is recognised.
+	tunnelled bool
+}
+
+// send is the one request path every plane goes through.
+func (c *Client) send(ctx context.Context, p plane, method, path string, body []byte, out any) error {
+	if c.IsClosed() {
+		return ErrClientClosed
+	}
+	if err := c.session.ensureAuthenticated(ctx, c); err != nil {
+		return err
+	}
+
+	var (
+		resp    *http.Response
+		lastErr error
+	)
+	for attempt := 0; attempt <= c.opts.MaxRetries; attempt++ {
+		if attempt > 0 {
+			if err := sleepCtx(ctx, backoff(attempt-1)); err != nil {
+				return err
+			}
+		}
+		tgt := target{base: c.opts.Endpoint, client: c.httpClient}
+		if p == dataPlane && c.tunnel != nil {
+			// Decided per attempt: a tunnel the daemon gave up on between
+			// attempts is re-selected and re-established here.
+			t, err := c.tunnel.ensure(ctx, c)
+			if err != nil {
+				return err
+			}
+			tgt = t
+		}
+		req, err := newRequest(ctx, c, method, tgt.base+path, body)
+		if err != nil {
+			return err
+		}
+		if err := c.setCredential(req, p); err != nil {
+			return err
+		}
+
+		resp, lastErr = tgt.client.Do(req)
+		if lastErr == nil && tgt.tunnelled && isProxyFailure(resp) {
+			drainAndClose(resp)
+			resp = nil
+			lastErr = tunnelUnavailable("the tunnel could not carry the request")
+		}
+		if lastErr != nil && tgt.tunnelled {
+			c.tunnel.noteFailure(ctx)
+		}
+		if lastErr == nil && resp.StatusCode < 500 {
+			break
+		}
+		if attempt == c.opts.MaxRetries {
+			break // keep the last 5xx so the caller sees what the service said
+		}
+		if resp != nil {
+			drainAndClose(resp)
+			resp = nil
+		}
+	}
+	if lastErr != nil {
+		if p == dataPlane && c.tunnel != nil {
+			if _, ok := lastErr.(*tunnelError); ok {
+				return lastErr
+			}
+			return tunnelUnavailable("%s", errClass(lastErr))
+		}
+		return fmt.Errorf("culperlink: request failed after %d retries: %w", c.opts.MaxRetries, lastErr)
+	}
+	defer drainAndClose(resp)
+	return decodeResponse(resp, out)
+}
+
+// setCredential attaches the plane's credential, and only that one.
+func (c *Client) setCredential(req *http.Request, p plane) error {
+	if p.carriesDataToken() {
+		tok := c.session.dataTokenValue()
+		if tok == "" {
+			// No fallback to the session token: that would send the
+			// Control Plane credential across the boundary.
+			return ErrInvalidSession
+		}
+		req.Header.Set(dataTokenHeader, tok)
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+c.session.token())
+	return nil
+}
+
+// newRequest builds one attempt from a body that is already buffered: a
+// fresh reader per attempt, ContentLength and GetBody set from the buffer, so
+// neither a retry nor the transport's own replay sends an empty body
+// (CULPER-331). A nil body is a request without one.
+func newRequest(ctx context.Context, c *Client, method, url string, body []byte) (*http.Request, error) {
+	var r io.Reader
+	if body != nil {
+		r = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, r)
+	if err != nil {
+		return nil, fmt.Errorf("culperlink: build request: %w", err)
+	}
+	if body != nil {
+		req.ContentLength = int64(len(body))
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}
+	}
+	req.Header.Set("User-Agent", c.opts.UserAgent)
+	req.Header.Set("Content-Type", "application/json")
+	return req, nil
+}
+
+// drainAndClose reads a body to EOF and closes it; a body closed with bytes
+// unread costs its connection.
+func drainAndClose(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+}
+
+// backoff is 100ms, 200ms, 400ms, ...
+func backoff(attempt int) time.Duration {
+	return time.Duration(100*(1<<attempt)) * time.Millisecond
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// errClass is the innermost cause of a tunnel failure. Go's transport errors
+// name the URL and the dialled address, which here are the node's tunnel
+// address and the proxy's; the innermost error ("connection refused",
+// "context deadline exceeded") names neither, so no address reaches a log
+// through this library's errors.
+func errClass(err error) string {
+	for {
+		inner := errors.Unwrap(err)
+		if inner == nil {
+			return err.Error()
+		}
+		err = inner
+	}
+}
