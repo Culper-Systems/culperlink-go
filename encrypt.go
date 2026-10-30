@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // Encrypt submits payload to your installation, which encrypts it and returns
@@ -135,7 +136,6 @@ type encryptResponse struct {
 	EphemeralPublicKey string `json:"ephemeral_public_key"`
 	KeyID              string `json:"key_id"`
 	AAD                string `json:"aad"`
-	CUIMarking         string `json:"cui_marking,omitempty"`
 }
 
 func (r *encryptResponse) toPayload() (*EncryptedPayload, error) {
@@ -158,7 +158,6 @@ func (r *encryptResponse) toPayload() (*EncryptedPayload, error) {
 		EphemeralPublicKey: epk,
 		KeyID:              r.KeyID,
 		AAD:                aad,
-		CUIMarking:         r.CUIMarking,
 	}, nil
 }
 
@@ -179,6 +178,10 @@ type attestRequest struct {
 	ClaimBody    string `json:"claim_body"` // base64
 }
 
+// verifyResponse is the server's verdict. AttestedAt is present only when
+// Valid is true; Verify returns Valid alone, as every CulperLink SDK does, and
+// the field is declared so this type says what the server sends.
 type verifyResponse struct {
-	Valid bool `json:"valid"`
+	Valid      bool       `json:"valid"`
+	AttestedAt *time.Time `json:"attested_at,omitempty"`
 }
