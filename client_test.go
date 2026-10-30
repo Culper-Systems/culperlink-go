@@ -89,7 +89,7 @@ func TestQuickstartCallsCarryTheirPlanesCredential(t *testing.T) {
 		t.Fatalf("wrong channel: %v, want ErrDecryptionFailed (and ErrEncryptionFailed)", err)
 	}
 	var api *APIError
-	if _, err := c.Decrypt(ctx, sealed, "conversation-2"); !errors.As(err, &api) || api.Code != "DECRYPTION_FAILED" || api.StatusCode != 400 {
+	if _, err := c.Decrypt(ctx, sealed, "conversation-2"); !errors.As(err, &api) || api.Code != "DECRYPTION_FAILED" || api.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("wrong channel should keep the service's code and status: %v", err)
 	}
 	proof, err := c.Attest(ctx, "doc", []byte("fingerprint"))
@@ -130,7 +130,7 @@ func TestTokenExchangeErrors(t *testing.T) {
 
 	cp.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Path == "/sdk/v1/auth/api-key" {
-			apiErr(w, http.StatusUnauthorized, "API_KEY_EXPIRED", "renew at /billing/renew")
+			apiErr(w, http.StatusForbidden, "API_KEY_EXPIRED", "renew at /billing/renew")
 			return true
 		}
 		return false
@@ -197,7 +197,7 @@ func TestRetriesReplayTheBody(t *testing.T) {
 		bodies = append(bodies, b)
 		mu.Unlock()
 		if fails.Add(1) <= 2 {
-			apiErr(w, http.StatusServiceUnavailable, "UNAVAILABLE", "try again")
+			apiErr(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE", "service temporarily unavailable")
 			return true
 		}
 		r.Body = io.NopCloser(bytes.NewReader(b))
@@ -243,7 +243,7 @@ func TestPersistentFiveHundredIsTheServicesError(t *testing.T) {
 	cp := newFakeCP(t)
 	cp.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Path == "/sdk/v1/verify" {
-			apiErr(w, http.StatusInternalServerError, "INTERNAL", "boom")
+			apiErr(w, http.StatusInternalServerError, "INTERNAL_ERROR", "boom")
 			return true
 		}
 		return false
@@ -251,8 +251,8 @@ func TestPersistentFiveHundredIsTheServicesError(t *testing.T) {
 	c := offClient(t, cp, func(o *Options) { o.MaxRetries = Retries(1) })
 	_, err := c.Verify(context.Background(), "p")
 	var api *APIError
-	if !errors.As(err, &api) || api.Code != "INTERNAL" {
-		t.Fatalf("Verify: %v, want the service's INTERNAL", err)
+	if !errors.As(err, &api) || api.Code != "INTERNAL_ERROR" {
+		t.Fatalf("Verify: %v, want the service's INTERNAL_ERROR", err)
 	}
 }
 
@@ -399,7 +399,7 @@ func TestMaxRetriesZeroMeansNoRetries(t *testing.T) {
 				if r.URL.Path != "/sdk/v1/verify" {
 					return false
 				}
-				apiErr(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "try later")
+				apiErr(w, http.StatusServiceUnavailable, "ATTESTATION_UNAVAILABLE", "attestation service unavailable")
 				return true
 			})
 			c := offClient(t, cp, func(o *Options) { o.MaxRetries = tc.maxRetries })
