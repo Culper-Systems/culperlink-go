@@ -231,7 +231,7 @@ func TestSelectionRefusals(t *testing.T) {
 				return false
 			})
 			d := newFakeDaemon(t, "0.2.0")
-			c := tunnelClient(t, cp, d, func(o *Options) { o.MaxRetries = 1 })
+			c := tunnelClient(t, cp, d, func(o *Options) { o.MaxRetries = Retries(1) })
 			if err := c.Connect(context.Background()); !errors.Is(err, tt.want) {
 				t.Fatalf("Connect: %v, want %v", err, tt.want)
 			}
@@ -342,7 +342,7 @@ func TestTunnelThatStaysDownIsTunnelUnavailable(t *testing.T) {
 	cp := newFakeCP(t)
 	d := newFakeDaemon(t, "0.2.0")
 	d.set(func(d *fakeDaemon) { d.httpAddr = "127.0.0.1:1" }) // nothing listens
-	c := tunnelClient(t, cp, d, func(o *Options) { o.MaxRetries = 1 })
+	c := tunnelClient(t, cp, d, func(o *Options) { o.MaxRetries = Retries(1) })
 	_, err := c.Encrypt(context.Background(), []byte("x"), "ch")
 	if !errors.Is(err, ErrTunnelUnavailable) {
 		t.Fatalf("Encrypt: %v, want ErrTunnelUnavailable", err)

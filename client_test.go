@@ -248,7 +248,7 @@ func TestPersistentFiveHundredIsTheServicesError(t *testing.T) {
 		}
 		return false
 	})
-	c := offClient(t, cp, func(o *Options) { o.MaxRetries = 1 })
+	c := offClient(t, cp, func(o *Options) { o.MaxRetries = Retries(1) })
 	_, err := c.Verify(context.Background(), "p")
 	var api *APIError
 	if !errors.As(err, &api) || api.Code != "INTERNAL" {
@@ -376,5 +376,40 @@ func TestEncryptRefusedSessionIsASessionError(t *testing.T) {
 	var api *APIError
 	if !errors.As(err, &api) || api.Code != "UNAUTHORIZED" || api.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("the service's code and status were dropped: %v", err)
+	}
+}
+
+// TestMaxRetriesZeroMeansNoRetries is CULPER-460 G-30: MaxRetries 0 used to
+// be indistinguishable from unset and silently meant 3. Retries(0) is now one
+// attempt; nil keeps the default of 3; a negative count is refused.
+func TestMaxRetriesZeroMeansNoRetries(t *testing.T) {
+	tests := []struct {
+		name         string
+		maxRetries   *int
+		wantAttempts int
+	}{
+		{"zero is no retries", Retries(0), 1},
+		{"one is one retry", Retries(1), 2},
+		{"nil is the default", nil, defaultMaxRetries + 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := newFakeCP(t)
+			cp.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
+				if r.URL.Path != "/sdk/v1/verify" {
+					return false
+				}
+				apiErr(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "try later")
+				return true
+			})
+			c := offClient(t, cp, func(o *Options) { o.MaxRetries = tc.maxRetries })
+			_, _ = c.Verify(context.Background(), "proof-abc")
+			if got := cp.hit("/sdk/v1/verify"); got != tc.wantAttempts {
+				t.Fatalf("attempts = %d, want %d", got, tc.wantAttempts)
+			}
+		})
+	}
+	if _, err := NewClient(Options{APIKey: "k", Endpoint: "https://x.example", MaxRetries: Retries(-1)}); err == nil {
+		t.Fatal("a negative MaxRetries was accepted")
 	}
 }
