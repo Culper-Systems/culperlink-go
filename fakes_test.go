@@ -255,7 +255,7 @@ func (cp *fakeCP) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"proof_hash": "proof-abc", "issued_at": time.Now().UTC(), "audit_log_url": "https://audit.example/proof-abc", "claim_subject": "doc"})
-	case "/sdk/v1/verify", "/audit/v1/access", "/sdk/v1/gateways/select":
+	case "/sdk/v1/verify", "/sdk/v1/gateways/select":
 		if r.Header.Get(dataTokenHeader) != "" {
 			cp.v.add("%s carried the data token", r.URL.Path)
 		}
@@ -266,8 +266,6 @@ func (cp *fakeCP) serve(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/sdk/v1/verify":
 			writeJSON(w, http.StatusOK, map[string]bool{"valid": r.URL.Query().Get("proof_hash") == "proof-abc"})
-		case "/audit/v1/access":
-			writeJSON(w, http.StatusOK, []AuditLogEntry{{Date: "2026-10-27", Endpoint: "/sdk/v1/encrypt", Count: 2, HTTPStatus: "2xx"}})
 		default:
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)

@@ -100,9 +100,14 @@ func TestQuickstartCallsCarryTheirPlanesCredential(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Verify = %v, %v", ok, err)
 	}
+	// No installation serves an audit log to an SDK credential: AuditLog
+	// refuses, says where the views are, and sends nothing (G-10).
 	entries, err := c.AuditLog(ctx, AuditLogOptions{From: "2026-10-01"})
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("AuditLog = %v, %v", entries, err)
+	if !errors.Is(err, ErrAuditLogNotServed) || entries != nil || !strings.Contains(err.Error(), "/api/v1/audit/v1/") {
+		t.Fatalf("AuditLog = %v, %v; want ErrAuditLogNotServed", entries, err)
+	}
+	if n := cp.hit("/audit/v1/access"); n != 0 {
+		t.Fatalf("AuditLog sent %d requests", n)
 	}
 	if v := cp.v.get(); len(v) > 0 {
 		t.Fatalf("plane violations: %v", v)

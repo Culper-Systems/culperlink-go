@@ -95,10 +95,15 @@ down and stops the daemon. Nothing else is configured.
 | --- | --- | --- |
 | `Encrypt`, `Decrypt` | `data_token` only | the node's tunnel address, through the daemon |
 | `Attest` | `data_token` only | `Options.Endpoint` |
-| `Verify`, `AuditLog`, gateway selection | `session_token` only | `Options.Endpoint` |
+| `Verify`, gateway selection | `session_token` only | `Options.Endpoint` |
 
 The two tokens are independent; no request carries both, and there is no
 fallback from one to the other.
+
+`AuditLog` returns `ErrAuditLogNotServed` and sends nothing. No CulperLink
+installation serves an audit view to an SDK credential: the auditor views
+are at `/api/v1/audit/v1/*` on your installation's operator console, behind
+an operator's login.
 
 The daemon is found at `Options.Tunnel.DaemonPath`, else on `PATH`; or
 `Options.Tunnel.DaemonSocket` names one already running. A daemon this

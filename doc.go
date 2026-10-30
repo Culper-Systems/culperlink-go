@@ -69,9 +69,11 @@
 // Encrypt and Decrypt carry data_token and nothing else, through the tunnel
 // to the node's tunnel address. Attest carries data_token to
 // Options.Endpoint: the receipt it writes lives in the Control Plane's
-// record, which a node holds no credential for. Verify, AuditLog and gateway
-// selection carry session_token to Options.Endpoint. No request ever carries
-// both, and there is no fallback from one to the other.
+// record, which a node holds no credential for. Verify and gateway selection
+// carry session_token to Options.Endpoint. No request ever carries both, and
+// there is no fallback from one to the other. AuditLog sends nothing: no
+// installation serves an audit view to an SDK credential
+// (ErrAuditLogNotServed).
 //
 // # The daemon
 //

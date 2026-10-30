@@ -2,12 +2,25 @@ package culperlink
 
 import (
 	"context"
-	"net/http"
-	"net/url"
+	"errors"
 )
 
-// AuditLogEntry is one k-anonymised access-log record: a daily request count
-// per endpoint, never PII or payload content.
+// ErrAuditLogNotServed is AuditLog's answer, always.
+//
+// No CulperLink installation serves an audit view to an SDK credential. The
+// auditor views are at /api/v1/audit/v1/* on the installation's operator
+// console, behind an operator's login, which an SDK session token is not and
+// cannot become. AuditLog used to GET Options.Endpoint + "/audit/v1/access"
+// with the session token, a path every installation answers 404 on, and its
+// test faked that path; it now refuses before making any request, so a
+// caller learns where the views are instead of meeting a 404. The method and
+// its types stay so that an SDK-authenticated view, if one is ever served,
+// has its client surface waiting; until then it is gated off.
+var ErrAuditLogNotServed = errors.New("culperlink: no installation serves an audit log to an SDK credential; " +
+	"the auditor views are at /api/v1/audit/v1/* on the operator console, behind an operator's login")
+
+// AuditLogEntry is one row of the access-log view as this library once
+// expected it. Retained, unused, with AuditLog; see ErrAuditLogNotServed.
 type AuditLogEntry struct {
 	Date         string `json:"date"`          // YYYY-MM-DD
 	CustomerHash string `json:"customer_hash"` // truncated SHA-256
@@ -16,30 +29,18 @@ type AuditLogEntry struct {
 	HTTPStatus   string `json:"http_status"` // "2xx" | "4xx" | "5xx"
 }
 
-// AuditLogOptions narrows AuditLog to a date range; empty is unbounded.
+// AuditLogOptions narrows AuditLog to a date range. Retained with AuditLog;
+// see ErrAuditLogNotServed.
 type AuditLogOptions struct {
 	From string // inclusive, YYYY-MM-DD
 	To   string // inclusive, YYYY-MM-DD
 }
 
-// AuditLog reads the k-anonymised access-log view (GET /audit/v1/access),
-// scoped by the service to the session's own organisation. A Control Plane
-// call; it does not bring the tunnel up.
-func (c *Client) AuditLog(ctx context.Context, opts AuditLogOptions) ([]AuditLogEntry, error) {
-	q := url.Values{}
-	if opts.From != "" {
-		q.Set("from", opts.From)
+// AuditLog returns ErrAuditLogNotServed and makes no request: no installation
+// serves an audit view to an SDK credential. See ErrAuditLogNotServed.
+func (c *Client) AuditLog(context.Context, AuditLogOptions) ([]AuditLogEntry, error) {
+	if c.IsClosed() {
+		return nil, ErrClientClosed
 	}
-	if opts.To != "" {
-		q.Set("to", opts.To)
-	}
-	path := "/audit/v1/access"
-	if enc := q.Encode(); enc != "" {
-		path += "?" + enc
-	}
-	var entries []AuditLogEntry
-	if err := c.doRequest(ctx, http.MethodGet, path, nil, &entries); err != nil {
-		return nil, err
-	}
-	return entries, nil
+	return nil, ErrAuditLogNotServed
 }
