@@ -1,0 +1,22 @@
+# golangci-lint configuration for the CulperLink Go SDK (CULPER-460 G-35).
+#
+# CI runs golangci-lint v2.14.0, the version the CulperLink core pins. Without
+# a file here the linter's own defaults decided what ran, so a change in
+# those defaults could change this library's lint with no change here. This
+# file writes the set down.
+#
+# standard is errcheck, govet, ineffassign, staticcheck and unused: what the
+# core runs. gosec is not enabled here; the core runs it separately
+# (make security-scan), and its taint checks flag the daemon spawn path,
+# whose inputs are the caller's own configuration.
+version: "2"
+
+linters:
+  default: standard
+
+formatters:
+  enable:
+    - gofmt
+  settings:
+    gofmt:
+      simplify: true
