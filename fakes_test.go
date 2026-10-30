@@ -73,6 +73,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// apiErr writes the service's error envelope. Every code and status a fake
+// here answers with must be one the server answers with for that code: the
+// CulperLink repository's tests/sdk_fake_codes_test.go reads these files and
+// holds each one to the server's error table. This fake once answered
+// DECRYPTION_FAILED with 400 and API_KEY_EXPIRED with 401 (the server's are
+// 422 and 403), and the tests asserted the 400 — the CULPER-333 defect of a
+// mock agreeing with itself, found again by the audit of Oct 29, 2026 (G-19).
 func apiErr(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]any{"error": map[string]any{"code": code, "message": msg}})
 }
@@ -104,7 +111,7 @@ func servePayload(w http.ResponseWriter, r *http.Request, v *violations, validTo
 	}
 	bound, _ := base64.StdEncoding.DecodeString(body["ephemeral_public_key"])
 	if string(bound) != body["channel"] {
-		apiErr(w, http.StatusBadRequest, "DECRYPTION_FAILED", "payload did not authenticate")
+		apiErr(w, http.StatusUnprocessableEntity, "DECRYPTION_FAILED", "payload did not authenticate")
 		return true
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"plaintext": body["ciphertext"]})
