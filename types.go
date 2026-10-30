@@ -102,6 +102,11 @@ type TunnelPolicy struct {
 	Mode     string          `json:"mode"` // "node_only", "prefixes" or "full"
 	Prefixes []string        `json:"prefixes,omitempty"`
 	DNS      TunnelDNSPolicy `json:"dns"`
+	// IPv6 says whether the policy covers IPv6 as well: ::/0 in "full" mode,
+	// IPv6 prefixes in "prefixes". It is handed to the daemon; without it a
+	// full policy with ipv6 on planned no ::/0, and the node's matching offer
+	// of ::/0 was refused as a policy mismatch (CULPER-460 G-4).
+	IPv6 bool `json:"ipv6"`
 }
 
 // TunnelDNSPolicy is the DNS half of TunnelPolicy: "host" leaves the host's

@@ -554,3 +554,37 @@ func TestMissingDaemonNamesTheSearchOrder(t *testing.T) {
 		t.Fatalf("bad DaemonPath: %v", err)
 	}
 }
+
+// TestPolicyIPv6ReachesTheDaemon is CULPER-460 G-4: the policy's ipv6 flag is
+// carried to the daemon. Without it a full+IPv6 organisation's node offers
+// ::/0, the daemon plans IPv4 only and refuses the offer, and the client
+// cannot connect.
+func TestPolicyIPv6ReachesTheDaemon(t *testing.T) {
+	skipWithoutUnixSockets(t)
+	tests := []struct {
+		name   string
+		policy map[string]any
+		want   bool
+	}{
+		{"full with ipv6", map[string]any{"mode": "full", "dns": map[string]any{"mode": "host"}, "ipv6": true}, true},
+		{"prefixes with ipv6", map[string]any{"mode": "prefixes", "prefixes": []string{"10.50.0.0/16", "fd00:50::/32"}, "dns": map[string]any{"mode": "host"}, "ipv6": true}, true},
+		{"full, ipv6 absent", map[string]any{"mode": "full", "dns": map[string]any{"mode": "host"}}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := newFakeCP(t)
+			cp.policy = tc.policy
+			d := newFakeDaemon(t, "0.2.0")
+			c := tunnelClient(t, cp, d)
+			if err := c.Connect(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			d.mu.Lock()
+			p, _ := d.connectReqs[0]["policy"].(map[string]any)
+			d.mu.Unlock()
+			if got, ok := p["ipv6"].(bool); !ok || got != tc.want {
+				t.Fatalf("policy handed to the daemon = %v, want ipv6=%v", p, tc.want)
+			}
+		})
+	}
+}
