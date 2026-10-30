@@ -10,12 +10,14 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -303,5 +305,91 @@ func TestTLSCACertFileMissingIsActionable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "/nonexistent/ca.pem") {
 		t.Errorf("error does not name the offending path: %q", err)
+	}
+}
+
+// TestTLSPinMatchesOnlyTheVerifiedChain is CULPER-460 G-2, the auditor's
+// attack. The server's leaf chains to a CA the client trusts ("Any Trusted
+// CA"), and the server also sends the pinned CA's public certificate, which
+// anyone can obtain. Chain verification ignores the extra certificate. The
+// old pin check looked at every certificate the server sent, matched the
+// appended one, and the API key went to the server. Pins now match the
+// verified chain only, so the connection is refused before any request.
+func TestTLSPinMatchesOnlyTheVerifiedChain(t *testing.T) {
+	trusted := newInternalCA(t)
+	pinned := newInternalCA(t)
+	pinnedPins, err := culperlink.SPKIPinFromPEM(pinned.certPEM)
+	if err != nil {
+		t.Fatalf("pins: %v", err)
+	}
+	leaf := trusted.issue(t)
+	leafPins, err := culperlink.SPKIPinFromPEM(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Certificate[0]}))
+	if err != nil {
+		t.Fatalf("leaf pins: %v", err)
+	}
+
+	var mu sync.Mutex
+	var received []string
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		received = append(received, string(body))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"session_token":"s","data_token":"d","expires_at":"2126-01-01T00:00:00Z"}`))
+	}))
+	srv.TLS = &tls.Config{
+		Certificates: []tls.Certificate{{
+			Certificate: [][]byte{leaf.Certificate[0], pinned.cert.Raw},
+			PrivateKey:  leaf.PrivateKey,
+		}},
+		MinVersion: tls.VersionTLS13,
+	}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+
+	tests := []struct {
+		name    string
+		pins    []string
+		wantErr error
+	}{
+		{name: "the appended pinned CA does not satisfy the pin", pins: pinnedPins, wantErr: culperlink.ErrCertificatePinMismatch},
+		{name: "the verified leaf still satisfies a leaf pin", pins: leafPins},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
+			received = nil
+			mu.Unlock()
+			c, err := culperlink.NewClient(culperlink.Options{
+				APIKey:   "clk_live_PIN_SECRET",
+				Endpoint: srv.URL,
+				Timeout:  5 * time.Second,
+				TLS:      culperlink.TLSConfig{CACertPEM: trusted.certPEM, PinnedSPKISHA256: tc.pins},
+				Tunnel:   culperlink.TunnelOptions{Mode: culperlink.TunnelOff},
+			})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			defer func() { _ = c.Close() }()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err = c.Connect(ctx)
+			mu.Lock()
+			got := append([]string(nil), received...)
+			mu.Unlock()
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("expected success, got %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("got %v, want %v", err, tc.wantErr)
+			}
+			if len(got) != 0 {
+				t.Fatalf("server received %d request(s) though the pin failed: %q", len(got), got)
+			}
+		})
 	}
 }
