@@ -20,7 +20,7 @@ import (
 )
 
 // Encrypt submits payload to your installation, which encrypts it and returns
-// the EncryptedPayload. This library performs no cryptography: it
+// the EncryptedPayload. This library performs no payload cryptography: it
 // base64-encodes the payload and sends it through the tunnel.
 //
 // sessionChannel is an opaque caller-chosen identifier — a conversation,

@@ -24,12 +24,18 @@
 //
 // # Trust boundary
 //
-// This library performs no cryptography of its own. Encrypt, Decrypt and
-// Attest serialize their arguments and send them to the service; that service
-// holds the payload keys and performs every payload operation. A payload is
+// This library performs no payload cryptography. Encrypt, Decrypt and Attest
+// serialize their arguments and send them to the service; that service holds
+// the payload keys and performs every payload operation. A payload is
 // therefore protected against every party except the installation the client
 // is configured against, which in a customer-operated deployment is the
 // customer's own.
+//
+// The cryptography this library does do is verifying the Control Plane's
+// TLS: the certificate chain against the configured trust (TLSConfig), and,
+// when pins are set, a SHA-256 SPKI pin matched against the verified chain
+// (tls.go). It uses crypto/tls, crypto/x509 and crypto/sha256 from the
+// standard library and implements no primitive itself.
 //
 // The transport cryptography — the WireGuard tunnel to the Data Plane node,
 // keyed by the hybrid ML-KEM-768 + P-256 handshake — is the daemon's. The
