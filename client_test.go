@@ -350,3 +350,31 @@ func TestCallsNearTheSessionCapRenewOnce(t *testing.T) {
 		t.Fatalf("renewals = %d, want still 1", n)
 	}
 }
+
+// TestEncryptRefusedSessionIsASessionError is CULPER-460 G-14: a refused data
+// token on Encrypt is a session problem, not an encryption failure. It used
+// to match ErrEncryptionFailed as well, so a caller (or culperlink-mcp) that
+// checks ErrEncryptionFailed first reported a revoked session as an
+// encryption failure. Python and TypeScript raise InvalidSessionError here.
+func TestEncryptRefusedSessionIsASessionError(t *testing.T) {
+	cp := newFakeCP(t)
+	cp.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path != "/sdk/v1/encrypt" {
+			return false
+		}
+		apiErr(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid or expired session")
+		return true
+	})
+	c := offClient(t, cp)
+	_, err := c.Encrypt(context.Background(), []byte("p"), "ch")
+	if !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("errors.Is(err, ErrInvalidSession) = false, err = %v", err)
+	}
+	if errors.Is(err, ErrEncryptionFailed) {
+		t.Errorf("a refused session matched ErrEncryptionFailed: %v", err)
+	}
+	var api *APIError
+	if !errors.As(err, &api) || api.Code != "UNAUTHORIZED" || api.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the service's code and status were dropped: %v", err)
+	}
+}

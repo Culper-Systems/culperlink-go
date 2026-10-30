@@ -34,9 +34,9 @@ var (
 	// revoked or malformed) or a token exchange did not yield a usable pair.
 	ErrInvalidSession = errors.New("culperlink: invalid session")
 
-	// ErrEncryptionFailed is returned by Encrypt when the service refuses the
-	// operation on the Data Plane credential. It also matches a failed
-	// decrypt, because the service reports both as DECRYPTION_FAILED.
+	// ErrEncryptionFailed matches a failed decrypt, because the service
+	// reports that as DECRYPTION_FAILED. A refused Data Plane credential on
+	// Encrypt does not match it: that is ErrInvalidSession (CULPER-460 G-14).
 	ErrEncryptionFailed = errors.New("culperlink: encryption operation failed")
 
 	// ErrDecryptionFailed is returned by Decrypt when the payload did not

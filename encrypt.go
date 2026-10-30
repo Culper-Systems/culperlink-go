@@ -42,9 +42,10 @@ func (c *Client) Encrypt(ctx context.Context, payload []byte, sessionChannel str
 	}
 	var resp encryptResponse
 	if err := c.doDataRequest(ctx, http.MethodPost, "/sdk/v1/encrypt", body, &resp); err != nil {
-		if api, ok := errorsAsAPI(err); ok && errors.Is(api, ErrInvalidSession) {
-			return nil, fmt.Errorf("%w: %w", ErrEncryptionFailed, api)
-		}
+		// A refused data token is returned as the *APIError: it matches
+		// ErrInvalidSession and keeps the service's code and status. It used
+		// to match ErrEncryptionFailed too, so a revoked session looked like
+		// an encryption failure (CULPER-460 G-14).
 		return nil, err
 	}
 	out, err := resp.toPayload()
