@@ -304,3 +304,49 @@ func TestTierValues(t *testing.T) {
 		t.Fatal("tier values drifted from the service's vocabulary")
 	}
 }
+
+// TestCallsNearTheSessionCapRenewOnce is CULPER-460 G-5. The service clamps a
+// renewal to the session's 12-hour cap, so from five minutes before it every
+// renewal answers the same expiry, still inside the refresh window. The
+// client used to renew on every call there, and the per-address limit shared
+// with the API-key route turned that into refusals. It now renews once, uses
+// the pair until shortly before the cap, then presents the API key once.
+func TestCallsNearTheSessionCapRenewOnce(t *testing.T) {
+	cp := newFakeCP(t)
+	cp.mu.Lock()
+	cp.capAt = time.Now().Add(200 * time.Second).UTC()
+	cp.mu.Unlock()
+	c := offClient(t, cp)
+	ctx := context.Background()
+
+	for i := 0; i < 10; i++ {
+		if _, err := c.Encrypt(ctx, []byte("p"), "ch"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := cp.hit("/sdk/v1/auth/renew"); n != 1 {
+		t.Fatalf("renewals for 10 calls = %d, want 1", n)
+	}
+	if n := cp.hit("/sdk/v1/auth/api-key"); n != 1 {
+		t.Fatalf("api-key exchanges = %d, want 1", n)
+	}
+
+	// Shortly before the cap: one API-key exchange, no further renewal.
+	cp.mu.Lock()
+	cp.capAt = time.Time{}
+	cp.mu.Unlock()
+	c.session.mu.Lock()
+	c.session.cappedMargin = 10 * time.Minute
+	c.session.mu.Unlock()
+	for i := 0; i < 5; i++ {
+		if _, err := c.Encrypt(ctx, []byte("p"), "ch"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := cp.hit("/sdk/v1/auth/api-key"); n != 2 {
+		t.Fatalf("api-key exchanges = %d, want 2", n)
+	}
+	if n := cp.hit("/sdk/v1/auth/renew"); n != 1 {
+		t.Fatalf("renewals = %d, want still 1", n)
+	}
+}
