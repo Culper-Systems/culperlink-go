@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -362,3 +363,42 @@ func errClass(err error) string {
 		err = inner
 	}
 }
+
+// redactedAPIKey stands in for the API key wherever an Options or a Client is
+// printed (CULPER-460 G-11). Logging the options or the client is routine in
+// error handlers and debug output, and fmt's %v, %+v and %#v print every
+// field, so without these methods a routine debug line carried the
+// long-lived credential in full.
+const redactedAPIKey = "[REDACTED]"
+
+// optionsNoMethods is Options without its methods, so formatting it does not
+// recurse into String.
+type optionsNoMethods Options
+
+func (o Options) redacted() optionsNoMethods {
+	if o.APIKey != "" {
+		o.APIKey = redactedAPIKey
+	}
+	return optionsNoMethods(o)
+}
+
+// String formats the options with the API key redacted. It also serves %v
+// and %+v.
+func (o Options) String() string { return fmt.Sprintf("%+v", o.redacted()) }
+
+// GoString formats the options for %#v with the API key redacted.
+func (o Options) GoString() string {
+	return strings.Replace(fmt.Sprintf("%#v", o.redacted()), "optionsNoMethods{", "Options{", 1)
+}
+
+// String names the client by its endpoint and nothing else: the session's
+// tokens and the API key it holds are never printed.
+func (c *Client) String() string {
+	if c == nil {
+		return "culperlink.Client(nil)"
+	}
+	return fmt.Sprintf("culperlink.Client{Endpoint: %q}", c.opts.Endpoint)
+}
+
+// GoString is String, for %#v.
+func (c *Client) GoString() string { return c.String() }
