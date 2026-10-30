@@ -933,16 +933,9 @@ func (c *Client) selectGateways(ctx context.Context) ([]GatewayDescriptor, *daem
 	if len(kept) == 0 {
 		return nil, nil, fmt.Errorf("%w: the candidate list is empty after the geofence", ErrSovereignNodeUnavailable)
 	}
-	wire := resp.TunnelPolicy
-	if wire == nil {
-		for i := range resp.Candidates {
-			if resp.Candidates[i].TunnelPolicy != nil {
-				wire = resp.Candidates[i].TunnelPolicy
-				break
-			}
-		}
-	}
-	return kept, policyForDaemon(wire), nil
+	// The organisation's policy is on the envelope and nowhere else: it is
+	// the organisation's, not a node's.
+	return kept, policyForDaemon(resp.TunnelPolicy), nil
 }
 
 // policyForDaemon is the wire policy in the daemon's request shape; nil means
