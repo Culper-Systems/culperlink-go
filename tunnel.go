@@ -243,6 +243,7 @@ type daemonPolicy struct {
 	Prefixes         []string `json:"prefixes"`
 	DNSThroughTunnel bool     `json:"dns_through_tunnel"`
 	Resolvers        []string `json:"resolvers"`
+	IPv6             bool     `json:"ipv6"`
 }
 
 type daemonConnectRequest struct {
@@ -959,6 +960,7 @@ func policyForDaemon(p *TunnelPolicy) *daemonPolicy {
 		Prefixes:         append([]string{}, p.Prefixes...),
 		DNSThroughTunnel: strings.EqualFold(strings.TrimSpace(p.DNS.Mode), "tunnel"),
 		Resolvers:        append([]string{}, p.DNS.Resolvers...),
+		IPv6:             p.IPv6,
 	}
 }
 
