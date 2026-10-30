@@ -126,6 +126,7 @@ type fakeCP struct {
 	hits       map[string]int
 	selectBody []map[string]any
 	ttl        time.Duration
+	capAt      time.Time // when set, every pair expires here: the service's 12-hour clamp
 	candidates []map[string]any
 	policy     map[string]any
 	// override, when set, answers first; returning true means handled.
@@ -182,6 +183,9 @@ func (cp *fakeCP) issue(w http.ResponseWriter) {
 	st, dt := fmt.Sprintf("st-%d", cp.n), fmt.Sprintf("dt-%d", cp.n)
 	cp.sessions[st], cp.data[dt] = true, true
 	exp := time.Now().Add(cp.ttl).UTC()
+	if !cp.capAt.IsZero() {
+		exp = cp.capAt
+	}
 	cp.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"session":       map[string]any{"id": "sess-1", "tier": TierEnterprise, "issued_at": time.Now().UTC(), "expires_at": exp},
