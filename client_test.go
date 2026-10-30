@@ -136,8 +136,25 @@ func TestTokenExchangeErrors(t *testing.T) {
 		return false
 	})
 	c2 := offClient(t, cp)
-	if err := c2.Connect(context.Background()); !errors.Is(err, ErrAPIKeyExpired) || errors.Is(err, ErrInvalidSession) {
-		t.Fatalf("expired key: %v, want ErrAPIKeyExpired and not ErrInvalidSession", err)
+	if err := c2.Connect(context.Background()); !errors.Is(err, ErrAPIKeyExpired) || errors.Is(err, ErrInvalidSession) ||
+		errors.Is(err, ErrLicenceExpired) || !errors.As(err, &api) || api.StatusCode != http.StatusForbidden {
+		t.Fatalf("expired key: %v, want ErrAPIKeyExpired carrying 403, and neither ErrInvalidSession nor ErrLicenceExpired", err)
+	}
+
+	// The installation's licence, not the key (CULPER-461 G-13): its own
+	// sentinel, so the caller looks in the right place.
+	cp.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path == "/sdk/v1/auth/api-key" {
+			apiErr(w, http.StatusForbidden, "LICENCE_EXPIRED", "this installation's licence has expired")
+			return true
+		}
+		return false
+	})
+	c3 := offClient(t, cp)
+	err = c3.Connect(context.Background())
+	if !errors.Is(err, ErrLicenceExpired) || errors.Is(err, ErrAPIKeyExpired) || errors.Is(err, ErrInvalidSession) ||
+		!errors.As(err, &api) || api.Code != "LICENCE_EXPIRED" || api.StatusCode != http.StatusForbidden {
+		t.Fatalf("lapsed licence: %v, want ErrLicenceExpired carrying LICENCE_EXPIRED/403, and neither ErrAPIKeyExpired nor ErrInvalidSession", err)
 	}
 }
 

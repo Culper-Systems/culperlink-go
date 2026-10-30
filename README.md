@@ -125,6 +125,7 @@ gives the service's code and HTTP status.
 | `ErrDecryptionFailed` | the payload did not authenticate (tampered, or a different channel) |
 | `ErrKeyEpochRetired` | the payload's key epoch is retired; payloads decrypt for at most 13 hours |
 | `ErrInvalidSession`, `ErrAPIKeyExpired`, `ErrRateLimited` | as named; an expired key must be renewed, not retried |
+| `ErrLicenceExpired` | your installation's licence has lapsed: the key may be fine, and the installation's operator renews the licence |
 
 ## HTTPS-only mode
 
