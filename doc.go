@@ -110,8 +110,9 @@
 // # Retry discipline
 //
 // Requests are retried on a 5xx or a transport error, up to
-// Options.MaxRetries times with exponential backoff; a 4xx is returned on
-// the first attempt. Every attempt is a new request over a buffered body, so
-// a retried Encrypt never sends an empty payload, and every response is read
-// to EOF and closed, so a retry loop never leaks a connection (CULPER-331).
+// Options.MaxRetries times (nil means 3; Retries(0) means none) with
+// exponential backoff; a 4xx is returned on the first attempt. Every attempt
+// is a new request over a buffered body, so a retried Encrypt never sends an
+// empty payload, and every response is read to EOF and closed, so a retry
+// loop never leaks a connection (CULPER-331).
 package culperlink
