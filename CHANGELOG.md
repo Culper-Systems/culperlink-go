@@ -13,8 +13,9 @@ The Go SDK's first release from its own repository (CULPER-452).
   one at `Options.Tunnel.DaemonSocket`), starts it with `-exit-with-parent`,
   checks its version against `DaemonVersionMin`/`DaemonVersionMax` before
   handing it a token, and refuses a proxy address that is not loopback.
-- No cryptography and no tunnel code in the library; the standard library is
-  its only dependency. The tunnel's hybrid handshake (ML-KEM-768 + P-256) is
+- No payload cryptography and no tunnel code in the library: it verifies the
+  installation's TLS (chain and SPKI pins) with the standard library, which
+  is its only dependency. The tunnel's hybrid handshake (ML-KEM-768 + P-256) is
   the daemon's.
 - `go get github.com/culper-systems/culperlink-go@v0.2.0`; the package is
   `culperlink`. Earlier Go SDK code lived inside the CulperLink core

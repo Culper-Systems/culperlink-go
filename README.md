@@ -5,11 +5,19 @@ payloads through your own CulperLink installation, over a post-quantum tunnel
 to its Data Plane node, and attest and verify claims against that
 installation's audit log.
 
-This library performs no cryptography and carries no tunnel code. It talks
-HTTPS to your installation's Control Plane for the session and for
-attestation, and drives the `culperlink-tunnel` daemon — the compiled program
-in the CulperLink release package — for the tunnel. It depends on the Go
-standard library only.
+This library performs no payload cryptography and carries no tunnel code.
+Your installation holds the payload keys and does every encrypt and decrypt.
+The cryptography this library does do is verifying your installation's TLS:
+the certificate chain against the trust you configure (`TLSConfig`) and, when
+you set pins, an SPKI pin matched against the verified chain. It uses the Go
+standard library's `crypto/tls`, `crypto/x509` and `crypto/sha256` for that and
+implements no primitive itself. The tunnel's cryptography (the WireGuard
+tunnel and its hybrid ML-KEM-768 + P-256 handshake) is the daemon's.
+
+The library talks HTTPS to your installation's Control Plane for the session
+and for attestation, and drives the `culperlink-tunnel` daemon — the compiled
+program in the CulperLink release package — for the tunnel. It depends on the
+Go standard library only.
 
 ## Requirements
 
