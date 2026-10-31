@@ -60,6 +60,7 @@ type EncryptedPayload struct {
 	// PayloadVersion is the payload format version, 2: associated data
 	// binding the marking and the channel. Decrypt sends it back; the
 	// service refuses version 1 by name.
+	// A payload built by hand with no version is sent as version 2.
 	PayloadVersion int `json:"payload_version"`
 }
 
