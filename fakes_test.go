@@ -98,19 +98,36 @@ func servePayload(w http.ResponseWriter, r *http.Request, v *violations, validTo
 		apiErr(w, http.StatusUnauthorized, "UNAUTHORIZED", "bad data token")
 		return true
 	}
-	var body map[string]string
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	var raw map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&raw)
+	body := map[string]string{}
+	for k, v := range raw {
+		if s, ok := v.(string); ok {
+			body[k] = s
+		}
+	}
+	// The fake binds the marking and the channel the way the server's
+	// associated data does (payload format version 2): into what decrypt
+	// checks, here the reserved ephemeral key field. It applies no
+	// organisation default; the marking sent is the marking sealed.
 	if r.URL.Path == "/sdk/v1/encrypt" {
-		writeJSON(w, http.StatusOK, map[string]string{
+		writeJSON(w, http.StatusOK, map[string]any{
 			"ciphertext":           body["payload"],
 			"nonce":                base64.StdEncoding.EncodeToString([]byte("nonce-12byte")),
-			"ephemeral_public_key": base64.StdEncoding.EncodeToString([]byte(body["channel"])),
+			"ephemeral_public_key": base64.StdEncoding.EncodeToString([]byte(body["cui_marking"] + "\x00" + body["channel"])),
 			"key_id":               "epoch-1",
+			"aad":                  "",
+			"cui_marking":          body["cui_marking"],
+			"payload_version":      2,
 		})
 		return true
 	}
+	if v, _ := raw["payload_version"].(float64); v != 2 {
+		apiErr(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "payload format version 1 is no longer accepted")
+		return true
+	}
 	bound, _ := base64.StdEncoding.DecodeString(body["ephemeral_public_key"])
-	if string(bound) != body["channel"] {
+	if string(bound) != body["cui_marking"]+"\x00"+body["channel"] {
 		apiErr(w, http.StatusUnprocessableEntity, "DECRYPTION_FAILED", "payload did not authenticate")
 		return true
 	}
