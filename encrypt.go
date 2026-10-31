@@ -86,7 +86,7 @@ func (c *Client) Decrypt(ctx context.Context, ep *EncryptedPayload, sessionChann
 		KeyID:              ep.KeyID,
 		Channel:            sessionChannel,
 		CUIMarking:         ep.CUIMarking,
-		PayloadVersion:     ep.PayloadVersion,
+		PayloadVersion:     payloadVersionOf(ep),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("culperlink: marshal decrypt request: %w", err)
@@ -205,4 +205,16 @@ type attestRequest struct {
 type verifyResponse struct {
 	Valid      bool       `json:"valid"`
 	AttestedAt *time.Time `json:"attested_at,omitempty"`
+}
+
+// payloadVersionOf is the version Decrypt sends: the payload's own, or 2 for
+// a payload built by hand without one. Version 2 is the only format this
+// library produces, and the Python and TypeScript libraries default the same
+// way. A client older than CULPER-462 sends no version at all, and the
+// service refuses that by name.
+func payloadVersionOf(ep *EncryptedPayload) int {
+	if ep.PayloadVersion == 0 {
+		return 2
+	}
+	return ep.PayloadVersion
 }
