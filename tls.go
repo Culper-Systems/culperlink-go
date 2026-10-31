@@ -22,9 +22,10 @@ package culperlink
 // longer the shortest path, and it does not look sanctioned.
 //
 // PINNING SHAPE. Pins are SHA-256 over the certificate's SubjectPublicKeyInfo,
-// matched against *any* certificate in the chain the server presents, not just
-// the leaf. Pinning the internal CA rather than the leaf is what lets a
-// customer rotate server certificates on their own schedule without every
+// matched against any certificate in the *verified* chain (the leaf through
+// the trust anchor), never against a certificate the server merely sent
+// (CULPER-460 G-2). Pinning the internal CA rather than the leaf is what lets
+// a customer rotate server certificates on their own schedule without every
 // deployed client failing at renewal — a leaf pin with no rotation path is an
 // outage waiting for a date.
 
@@ -174,21 +175,24 @@ func (t TLSConfig) rootPool() (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// verifyPins is installed as tls.Config.VerifyPeerCertificate. It runs in
-// addition to normal chain verification, never instead of it: a pin that
-// matched would not rescue a chain that failed to verify, because this
-// callback is not reached when verification fails.
+// verifyPins is installed through tls.Config.VerifyConnection. It runs after
+// normal chain verification, never instead of it: a pin that matched would not
+// rescue a chain that failed to verify, because this callback is not reached
+// when verification fails.
 //
-// It considers both the certificates the server actually sent and the chains
-// crypto/tls built to verify them. That distinction is not academic. A server
-// configured with only its leaf certificate — a common and not incorrect
-// setup when the client already holds the issuing CA — sends exactly one
-// certificate, so a customer who pinned their internal *root* would find the
-// pin never matching if only the presented bytes were checked. The verified
-// chain carries the root that the supplied CA bundle anchored, so pinning the
-// CA works in both server configurations, which is what makes "pin the CA so
-// you can rotate leaves" honest advice rather than a trap.
-func (t TLSConfig) verifyPins(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+// It matches the verified chains only — the leaf crypto/tls verified and the
+// path it built from that leaf to a trusted root — never the certificates the
+// server merely sent. A server can send any certificate it likes alongside its
+// leaf; a CA's certificate is public. Matching what was sent let a server
+// whose leaf chained to some other trusted CA append the pinned CA's
+// certificate and pass (CULPER-460 G-2). The verified chain still carries the
+// root that the supplied CA bundle anchored, so pinning the CA works when the
+// server sends only its leaf, which is what makes "pin the CA so you can
+// rotate leaves" honest advice rather than a trap.
+//
+// VerifyConnection rather than VerifyPeerCertificate because it also runs on
+// a resumed session, with the chains verified when the session was made.
+func (t TLSConfig) verifyPins(verifiedChains [][]*x509.Certificate) error {
 	if len(t.PinnedSPKISHA256) == 0 {
 		return nil
 	}
@@ -199,15 +203,6 @@ func (t TLSConfig) verifyPins(rawCerts [][]byte, verifiedChains [][]*x509.Certif
 		}
 	}
 
-	for _, raw := range rawCerts {
-		cert, err := x509.ParseCertificate(raw)
-		if err != nil {
-			continue
-		}
-		if _, ok := want[SPKIPin(cert)]; ok {
-			return nil
-		}
-	}
 	for _, chain := range verifiedChains {
 		for _, cert := range chain {
 			if _, ok := want[SPKIPin(cert)]; ok {
@@ -236,7 +231,9 @@ func (t TLSConfig) tlsConfig() (*tls.Config, error) {
 		ServerName: t.ServerName,
 	}
 	if len(t.PinnedSPKISHA256) > 0 {
-		cfg.VerifyPeerCertificate = t.verifyPins
+		cfg.VerifyConnection = func(cs tls.ConnectionState) error {
+			return t.verifyPins(cs.VerifiedChains)
+		}
 	}
 	return cfg, nil
 }

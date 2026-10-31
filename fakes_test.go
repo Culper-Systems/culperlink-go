@@ -73,6 +73,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// apiErr writes the service's error envelope. Every code and status a fake
+// here answers with must be one the server answers with for that code: the
+// CulperLink repository's tests/sdk_fake_codes_test.go reads these files and
+// holds each one to the server's error table. This fake once answered
+// DECRYPTION_FAILED with 400 and API_KEY_EXPIRED with 401 (the server's are
+// 422 and 403), and the tests asserted the 400 — the CULPER-333 defect of a
+// mock agreeing with itself, found again by the audit of Oct 29, 2026 (G-19).
 func apiErr(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]any{"error": map[string]any{"code": code, "message": msg}})
 }
@@ -104,7 +111,7 @@ func servePayload(w http.ResponseWriter, r *http.Request, v *violations, validTo
 	}
 	bound, _ := base64.StdEncoding.DecodeString(body["ephemeral_public_key"])
 	if string(bound) != body["channel"] {
-		apiErr(w, http.StatusBadRequest, "DECRYPTION_FAILED", "payload did not authenticate")
+		apiErr(w, http.StatusUnprocessableEntity, "DECRYPTION_FAILED", "payload did not authenticate")
 		return true
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"plaintext": body["ciphertext"]})
@@ -126,6 +133,7 @@ type fakeCP struct {
 	hits       map[string]int
 	selectBody []map[string]any
 	ttl        time.Duration
+	capAt      time.Time // when set, every pair expires here: the service's 12-hour clamp
 	candidates []map[string]any
 	policy     map[string]any
 	// override, when set, answers first; returning true means handled.
@@ -182,6 +190,9 @@ func (cp *fakeCP) issue(w http.ResponseWriter) {
 	st, dt := fmt.Sprintf("st-%d", cp.n), fmt.Sprintf("dt-%d", cp.n)
 	cp.sessions[st], cp.data[dt] = true, true
 	exp := time.Now().Add(cp.ttl).UTC()
+	if !cp.capAt.IsZero() {
+		exp = cp.capAt
+	}
 	cp.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"session":       map[string]any{"id": "sess-1", "tier": TierEnterprise, "issued_at": time.Now().UTC(), "expires_at": exp},
@@ -244,7 +255,7 @@ func (cp *fakeCP) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"proof_hash": "proof-abc", "issued_at": time.Now().UTC(), "audit_log_url": "https://audit.example/proof-abc", "claim_subject": "doc"})
-	case "/sdk/v1/verify", "/audit/v1/access", "/sdk/v1/gateways/select":
+	case "/sdk/v1/verify", "/sdk/v1/gateways/select":
 		if r.Header.Get(dataTokenHeader) != "" {
 			cp.v.add("%s carried the data token", r.URL.Path)
 		}
@@ -255,8 +266,6 @@ func (cp *fakeCP) serve(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/sdk/v1/verify":
 			writeJSON(w, http.StatusOK, map[string]bool{"valid": r.URL.Query().Get("proof_hash") == "proof-abc"})
-		case "/audit/v1/access":
-			writeJSON(w, http.StatusOK, []AuditLogEntry{{Date: "2026-10-27", Endpoint: "/sdk/v1/encrypt", Count: 2, HTTPStatus: "2xx"}})
 		default:
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)

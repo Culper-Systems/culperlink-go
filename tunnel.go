@@ -243,6 +243,7 @@ type daemonPolicy struct {
 	Prefixes         []string `json:"prefixes"`
 	DNSThroughTunnel bool     `json:"dns_through_tunnel"`
 	Resolvers        []string `json:"resolvers"`
+	IPv6             bool     `json:"ipv6"`
 }
 
 type daemonConnectRequest struct {
@@ -932,16 +933,9 @@ func (c *Client) selectGateways(ctx context.Context) ([]GatewayDescriptor, *daem
 	if len(kept) == 0 {
 		return nil, nil, fmt.Errorf("%w: the candidate list is empty after the geofence", ErrSovereignNodeUnavailable)
 	}
-	wire := resp.TunnelPolicy
-	if wire == nil {
-		for i := range resp.Candidates {
-			if resp.Candidates[i].TunnelPolicy != nil {
-				wire = resp.Candidates[i].TunnelPolicy
-				break
-			}
-		}
-	}
-	return kept, policyForDaemon(wire), nil
+	// The organisation's policy is on the envelope and nowhere else: it is
+	// the organisation's, not a node's.
+	return kept, policyForDaemon(resp.TunnelPolicy), nil
 }
 
 // policyForDaemon is the wire policy in the daemon's request shape; nil means
@@ -959,6 +953,7 @@ func policyForDaemon(p *TunnelPolicy) *daemonPolicy {
 		Prefixes:         append([]string{}, p.Prefixes...),
 		DNSThroughTunnel: strings.EqualFold(strings.TrimSpace(p.DNS.Mode), "tunnel"),
 		Resolvers:        append([]string{}, p.DNS.Resolvers...),
+		IPv6:             p.IPv6,
 	}
 }
 
