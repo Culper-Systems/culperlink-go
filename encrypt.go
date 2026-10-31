@@ -27,7 +27,16 @@ import (
 // sessionChannel is an opaque caller-chosen identifier — a conversation,
 // document or request id. The service binds it into the AEAD as additional
 // authenticated data, and Decrypt must be given the same value.
+//
+// Encrypt sends no CUI marking: the organisation's default marking, if its
+// operator set one, is applied and reported in the result's CUIMarking.
+// TagPayload sends one.
 func (c *Client) Encrypt(ctx context.Context, payload []byte, sessionChannel string) (*EncryptedPayload, error) {
+	return c.encrypt(ctx, payload, sessionChannel, CUINone)
+}
+
+// encrypt is Encrypt and TagPayload: marking is sent as cui_marking when set.
+func (c *Client) encrypt(ctx context.Context, payload []byte, sessionChannel string, marking CUIMarking) (*EncryptedPayload, error) {
 	if len(payload) == 0 {
 		return nil, errors.New("culperlink: payload required")
 	}
@@ -35,8 +44,9 @@ func (c *Client) Encrypt(ctx context.Context, payload []byte, sessionChannel str
 		return nil, errors.New("culperlink: sessionChannel required")
 	}
 	body, err := json.Marshal(encryptRequest{
-		Payload: base64.StdEncoding.EncodeToString(payload),
-		Channel: sessionChannel,
+		Payload:    base64.StdEncoding.EncodeToString(payload),
+		Channel:    sessionChannel,
+		CUIMarking: string(marking),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("culperlink: marshal encrypt request: %w", err)
@@ -56,8 +66,10 @@ func (c *Client) Encrypt(ctx context.Context, payload []byte, sessionChannel str
 	return out, nil
 }
 
-// Decrypt reverses Encrypt. The same sessionChannel must be supplied; a
-// mismatch, like any tampering, matches ErrDecryptionFailed. A payload whose
+// Decrypt reverses Encrypt. The same sessionChannel must be supplied, and
+// the payload's CUIMarking and PayloadVersion are sent back as Encrypt
+// returned them; a changed channel, a stripped or changed marking, or any
+// other tampering matches ErrDecryptionFailed. A payload whose
 // key epoch is retired matches ErrKeyEpochRetired. Every other failure — a
 // rejected session, a rate limit, the tunnel — reaches the caller as itself.
 func (c *Client) Decrypt(ctx context.Context, ep *EncryptedPayload, sessionChannel string) ([]byte, error) {
@@ -73,6 +85,8 @@ func (c *Client) Decrypt(ctx context.Context, ep *EncryptedPayload, sessionChann
 		EphemeralPublicKey: base64.StdEncoding.EncodeToString(ep.EphemeralPublicKey),
 		KeyID:              ep.KeyID,
 		Channel:            sessionChannel,
+		CUIMarking:         ep.CUIMarking,
+		PayloadVersion:     ep.PayloadVersion,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("culperlink: marshal decrypt request: %w", err)
@@ -126,8 +140,9 @@ func (c *Client) Verify(ctx context.Context, proofHash string) (bool, error) {
 }
 
 type encryptRequest struct {
-	Payload string `json:"payload"` // base64
-	Channel string `json:"channel"`
+	Payload    string `json:"payload"` // base64
+	Channel    string `json:"channel"`
+	CUIMarking string `json:"cui_marking,omitempty"`
 }
 
 type encryptResponse struct {
@@ -136,6 +151,8 @@ type encryptResponse struct {
 	EphemeralPublicKey string `json:"ephemeral_public_key"`
 	KeyID              string `json:"key_id"`
 	AAD                string `json:"aad"`
+	CUIMarking         string `json:"cui_marking"`
+	PayloadVersion     int    `json:"payload_version"`
 }
 
 func (r *encryptResponse) toPayload() (*EncryptedPayload, error) {
@@ -158,6 +175,8 @@ func (r *encryptResponse) toPayload() (*EncryptedPayload, error) {
 		EphemeralPublicKey: epk,
 		KeyID:              r.KeyID,
 		AAD:                aad,
+		CUIMarking:         r.CUIMarking,
+		PayloadVersion:     r.PayloadVersion,
 	}, nil
 }
 
@@ -167,6 +186,8 @@ type decryptRequest struct {
 	EphemeralPublicKey string `json:"ephemeral_public_key"`
 	KeyID              string `json:"key_id"`
 	Channel            string `json:"channel"`
+	CUIMarking         string `json:"cui_marking,omitempty"`
+	PayloadVersion     int    `json:"payload_version"`
 }
 
 type decryptResponse struct {

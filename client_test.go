@@ -3,6 +3,7 @@ package culperlink
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -433,5 +434,98 @@ func TestMaxRetriesZeroMeansNoRetries(t *testing.T) {
 	}
 	if _, err := NewClient(Options{APIKey: "k", Endpoint: "https://x.example", MaxRetries: Retries(-1)}); err == nil {
 		t.Fatal("a negative MaxRetries was accepted")
+	}
+}
+
+// CULPER-462: TagPayload sends the marking in the encrypt body, the payload
+// carries the marking and payload version the service returned, and Decrypt
+// sends both back; a stripped marking does not decrypt.
+func TestTagPayloadSendsTheMarkingAndDecryptReturnsIt(t *testing.T) {
+	cp := newFakeCP(t)
+	var (
+		mu     sync.Mutex
+		bodies = map[string]map[string]any{}
+	)
+	cp.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path != "/sdk/v1/encrypt" && r.URL.Path != "/sdk/v1/decrypt" {
+			return false
+		}
+		b, _ := io.ReadAll(r.Body)
+		var m map[string]any
+		_ = json.Unmarshal(b, &m)
+		mu.Lock()
+		bodies[r.URL.Path] = m
+		mu.Unlock()
+		r.Body = io.NopCloser(bytes.NewReader(b))
+		return false
+	})
+	c := offClient(t, cp)
+	ctx := context.Background()
+
+	plain, err := c.Encrypt(ctx, []byte("p"), "ch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if _, sent := bodies["/sdk/v1/encrypt"]["cui_marking"]; sent {
+		t.Errorf("Encrypt sent a cui_marking; the organisation default must apply")
+	}
+	mu.Unlock()
+	if plain.CUIMarking != "" || plain.PayloadVersion != 2 {
+		t.Errorf("Encrypt payload = marking %q version %d, want \"\" and 2", plain.CUIMarking, plain.PayloadVersion)
+	}
+
+	ep, err := c.TagPayload(ctx, []byte("secret"), CUIDefenseCSI, "ch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if got := bodies["/sdk/v1/encrypt"]["cui_marking"]; got != string(CUIDefenseCSI) {
+		t.Errorf("TagPayload sent cui_marking %v, want %q", got, CUIDefenseCSI)
+	}
+	mu.Unlock()
+	if ep.CUIMarking != string(CUIDefenseCSI) || ep.PayloadVersion != 2 {
+		t.Fatalf("payload = marking %q version %d", ep.CUIMarking, ep.PayloadVersion)
+	}
+	got, err := c.Decrypt(ctx, ep, "ch")
+	if err != nil || string(got) != "secret" {
+		t.Fatalf("Decrypt = %q, %v", got, err)
+	}
+	mu.Lock()
+	dec := bodies["/sdk/v1/decrypt"]
+	mu.Unlock()
+	if dec["cui_marking"] != string(CUIDefenseCSI) || dec["payload_version"] != float64(2) {
+		t.Errorf("Decrypt sent cui_marking %v payload_version %v", dec["cui_marking"], dec["payload_version"])
+	}
+
+	stripped := *ep
+	stripped.CUIMarking = ""
+	if _, err := c.Decrypt(ctx, &stripped, "ch"); !errors.Is(err, ErrDecryptionFailed) {
+		t.Fatalf("a stripped marking decrypted: %v", err)
+	}
+}
+
+func TestCUIMarkingPredicates(t *testing.T) {
+	sovereign := map[CUIMarking]bool{
+		CUIDefenseCSI: true, CUIExportControl: true, CUINuclear: true, CUINavalReactors: true,
+		CUIIntelligence: true, CUILawEnforcement: true, CUIExportControlled: true, CUICritical: true,
+	}
+	all := []CUIMarking{CUIBasic, CUIPrivacy, CUIProprietaryInfo, CUIDefenseCSI, CUIExportControl,
+		CUINuclear, CUINavalReactors, CUIIntelligence, CUILawEnforcement, CUIExportControlled,
+		CUIFinancial, CUIProcurement, CUIGeodetic, CUICritical, CUITax, CUIStatistical,
+		CUIStudentRecords, CUIHealth, CUILegal}
+	if len(all) != 19 {
+		t.Fatalf("%d markings, want 19", len(all))
+	}
+	for _, m := range all {
+		if !m.IsValid() {
+			t.Errorf("%q not valid", m)
+		}
+		if m.RequiresSovereignNode() != sovereign[m] {
+			t.Errorf("%q RequiresSovereignNode = %v", m, !sovereign[m])
+		}
+	}
+	if !CUINone.IsValid() || CUINone.RequiresSovereignNode() || CUIMarking("CUI//BOGUS").IsValid() {
+		t.Error("CUINone or an unknown marking misclassified")
 	}
 }
