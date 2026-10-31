@@ -39,5 +39,20 @@ The Go SDK's first release from its own repository (CULPER-452).
     `AuditLog` because no `/sdk/v1` route serves an audit view (G-10);
   - the library is a runner in CulperLink's conformance suite and its
     end-to-end test runs in that repository's CI (G-7).
+- CUI marking is the service's, bound into the ciphertext (CulperLink
+  CULPER-462, owner decision 22). `TagPayload` now sends its marking as the
+  encrypt request's `cui_marking`; the service seals the payload under the
+  stronger of it and the organisation's default marking (set by the
+  installation's operator) and returns the marking it applied, which
+  `EncryptedPayload.CUIMarking` now carries. `Encrypt` sends none, so the
+  default applies. The marking is in the payload's associated data:
+  `Decrypt` sends it back with the new `EncryptedPayload.PayloadVersion`
+  (2), and a payload whose marking was stripped or changed matches
+  `ErrDecryptionFailed`. The service refuses payload format version 1 by
+  name. All nineteen recognised markings are constants;
+  `RequiresSovereignNode` answers per marking (true only for SP-CTI,
+  SP-EXPT, SP-NUC, SP-NNPI, SP-INTEL, SP-LEI, SP-ECI and SP-CRIT); the
+  client-side geofence covers SP-ECI (ITAR) and SP-NNPI and SP-INTEL
+  (GovCloud).
 - Mode `TunnelOff` is the HTTPS-only client, for an installation with no
   Data Plane node and for Windows.

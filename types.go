@@ -51,9 +51,17 @@ type EncryptedPayload struct {
 	EphemeralPublicKey []byte `json:"ephemeral_public_key"`
 	KeyID              string `json:"key_id"`
 	AAD                []byte `json:"aad,omitempty"`
-	// CUIMarking is a marking TagPayload set locally after the response
-	// came back. The service never reports one.
+	// CUIMarking is the Controlled Unclassified Information marking the
+	// service sealed the payload under — the organisation's default, or a
+	// stronger one the request asked for — and "" for none. It is bound into
+	// the associated data: Decrypt sends it back, and a payload whose marking
+	// was stripped or changed does not decrypt.
 	CUIMarking string `json:"cui_marking,omitempty"`
+	// PayloadVersion is the payload format version, 2: associated data
+	// binding the marking and the channel. Decrypt sends it back; the
+	// service refuses version 1 by name.
+	// A payload built by hand with no version is sent as version 2.
+	PayloadVersion int `json:"payload_version"`
 }
 
 // AttestationProof is returned by Attest: a tamper-evident hash issued by the
