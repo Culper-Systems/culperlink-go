@@ -17,10 +17,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // Encrypt submits payload to your installation, which encrypts it and returns
-// the EncryptedPayload. This library performs no cryptography: it
+// the EncryptedPayload. This library performs no payload cryptography: it
 // base64-encodes the payload and sends it through the tunnel.
 //
 // sessionChannel is an opaque caller-chosen identifier — a conversation,
@@ -42,9 +43,10 @@ func (c *Client) Encrypt(ctx context.Context, payload []byte, sessionChannel str
 	}
 	var resp encryptResponse
 	if err := c.doDataRequest(ctx, http.MethodPost, "/sdk/v1/encrypt", body, &resp); err != nil {
-		if api, ok := errorsAsAPI(err); ok && errors.Is(api, ErrInvalidSession) {
-			return nil, fmt.Errorf("%w: %w", ErrEncryptionFailed, api)
-		}
+		// A refused data token is returned as the *APIError: it matches
+		// ErrInvalidSession and keeps the service's code and status. It used
+		// to match ErrEncryptionFailed too, so a revoked session looked like
+		// an encryption failure (CULPER-460 G-14).
 		return nil, err
 	}
 	out, err := resp.toPayload()
@@ -134,7 +136,6 @@ type encryptResponse struct {
 	EphemeralPublicKey string `json:"ephemeral_public_key"`
 	KeyID              string `json:"key_id"`
 	AAD                string `json:"aad"`
-	CUIMarking         string `json:"cui_marking,omitempty"`
 }
 
 func (r *encryptResponse) toPayload() (*EncryptedPayload, error) {
@@ -157,7 +158,6 @@ func (r *encryptResponse) toPayload() (*EncryptedPayload, error) {
 		EphemeralPublicKey: epk,
 		KeyID:              r.KeyID,
 		AAD:                aad,
-		CUIMarking:         r.CUIMarking,
 	}, nil
 }
 
@@ -178,6 +178,10 @@ type attestRequest struct {
 	ClaimBody    string `json:"claim_body"` // base64
 }
 
+// verifyResponse is the server's verdict. AttestedAt is present only when
+// Valid is true; Verify returns Valid alone, as every CulperLink SDK does, and
+// the field is declared so this type says what the server sends.
 type verifyResponse struct {
-	Valid bool `json:"valid"`
+	Valid      bool       `json:"valid"`
+	AttestedAt *time.Time `json:"attested_at,omitempty"`
 }

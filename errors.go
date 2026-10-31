@@ -34,9 +34,9 @@ var (
 	// revoked or malformed) or a token exchange did not yield a usable pair.
 	ErrInvalidSession = errors.New("culperlink: invalid session")
 
-	// ErrEncryptionFailed is returned by Encrypt when the service refuses the
-	// operation on the Data Plane credential. It also matches a failed
-	// decrypt, because the service reports both as DECRYPTION_FAILED.
+	// ErrEncryptionFailed matches a failed decrypt, because the service
+	// reports that as DECRYPTION_FAILED. A refused Data Plane credential on
+	// Encrypt does not match it: that is ErrInvalidSession (CULPER-460 G-14).
 	ErrEncryptionFailed = errors.New("culperlink: encryption operation failed")
 
 	// ErrDecryptionFailed is returned by Decrypt when the payload did not
@@ -64,6 +64,14 @@ var (
 	// retrying and re-authenticating both fail; renewing the key is the only
 	// remedy, and the APIError's Message names the route.
 	ErrAPIKeyExpired = errors.New("culperlink: API key expired — renew it")
+
+	// ErrLicenceExpired is returned when the installation's own licence has
+	// lapsed (LICENCE_EXPIRED, HTTP 403): the token exchange refuses before it
+	// reads the API key. Distinct from ErrAPIKeyExpired on purpose: the key
+	// may be perfectly good, renewing it changes nothing, and the remedy is
+	// the installation operator's. Sessions already issued run to their own
+	// expiry. The APIError's Message is the service's instruction.
+	ErrLicenceExpired = errors.New("culperlink: the installation's licence has expired")
 
 	// ErrPasskeyDeclined is returned when the user cancels or declines a
 	// WebAuthn ceremony on their authenticator.
@@ -149,6 +157,8 @@ func (e *APIError) Is(target error) bool {
 		return e.Code == "KEY_EPOCH_RETIRED"
 	case ErrAPIKeyExpired:
 		return e.Code == "API_KEY_EXPIRED"
+	case ErrLicenceExpired:
+		return e.Code == "LICENCE_EXPIRED"
 	case ErrPasskeyDeclined:
 		return e.Code == "INVALID_PASSKEY"
 	case ErrSovereignNodeUnavailable:

@@ -24,12 +24,18 @@
 //
 // # Trust boundary
 //
-// This library performs no cryptography of its own. Encrypt, Decrypt and
-// Attest serialize their arguments and send them to the service; that service
-// holds the payload keys and performs every payload operation. A payload is
+// This library performs no payload cryptography. Encrypt, Decrypt and Attest
+// serialize their arguments and send them to the service; that service holds
+// the payload keys and performs every payload operation. A payload is
 // therefore protected against every party except the installation the client
 // is configured against, which in a customer-operated deployment is the
 // customer's own.
+//
+// The cryptography this library does do is verifying the Control Plane's
+// TLS: the certificate chain against the configured trust (TLSConfig), and,
+// when pins are set, a SHA-256 SPKI pin matched against the verified chain
+// (tls.go). It uses crypto/tls, crypto/x509 and crypto/sha256 from the
+// standard library and implements no primitive itself.
 //
 // The transport cryptography — the WireGuard tunnel to the Data Plane node,
 // keyed by the hybrid ML-KEM-768 + P-256 handshake — is the daemon's. The
@@ -63,9 +69,11 @@
 // Encrypt and Decrypt carry data_token and nothing else, through the tunnel
 // to the node's tunnel address. Attest carries data_token to
 // Options.Endpoint: the receipt it writes lives in the Control Plane's
-// record, which a node holds no credential for. Verify, AuditLog and gateway
-// selection carry session_token to Options.Endpoint. No request ever carries
-// both, and there is no fallback from one to the other.
+// record, which a node holds no credential for. Verify and gateway selection
+// carry session_token to Options.Endpoint. No request ever carries both, and
+// there is no fallback from one to the other. AuditLog sends nothing: no
+// installation serves an audit view to an SDK credential
+// (ErrAuditLogNotServed).
 //
 // # The daemon
 //
@@ -110,8 +118,9 @@
 // # Retry discipline
 //
 // Requests are retried on a 5xx or a transport error, up to
-// Options.MaxRetries times with exponential backoff; a 4xx is returned on
-// the first attempt. Every attempt is a new request over a buffered body, so
-// a retried Encrypt never sends an empty payload, and every response is read
-// to EOF and closed, so a retry loop never leaks a connection (CULPER-331).
+// Options.MaxRetries times (nil means 3; Retries(0) means none) with
+// exponential backoff; a 4xx is returned on the first attempt. Every attempt
+// is a new request over a buffered body, so a retried Encrypt never sends an
+// empty payload, and every response is read to EOF and closed, so a retry
+// loop never leaks a connection (CULPER-331).
 package culperlink

@@ -5,11 +5,19 @@ payloads through your own CulperLink installation, over a post-quantum tunnel
 to its Data Plane node, and attest and verify claims against that
 installation's audit log.
 
-This library performs no cryptography and carries no tunnel code. It talks
-HTTPS to your installation's Control Plane for the session and for
-attestation, and drives the `culperlink-tunnel` daemon — the compiled program
-in the CulperLink release package — for the tunnel. It depends on the Go
-standard library only.
+This library performs no payload cryptography and carries no tunnel code.
+Your installation holds the payload keys and does every encrypt and decrypt.
+The cryptography this library does do is verifying your installation's TLS:
+the certificate chain against the trust you configure (`TLSConfig`) and, when
+you set pins, an SPKI pin matched against the verified chain. It uses the Go
+standard library's `crypto/tls`, `crypto/x509` and `crypto/sha256` for that and
+implements no primitive itself. The tunnel's cryptography (the WireGuard
+tunnel and its hybrid ML-KEM-768 + P-256 handshake) is the daemon's.
+
+The library talks HTTPS to your installation's Control Plane for the session
+and for attestation, and drives the `culperlink-tunnel` daemon — the compiled
+program in the CulperLink release package — for the tunnel. It depends on the
+Go standard library only.
 
 ## Requirements
 
@@ -95,10 +103,15 @@ down and stops the daemon. Nothing else is configured.
 | --- | --- | --- |
 | `Encrypt`, `Decrypt` | `data_token` only | the node's tunnel address, through the daemon |
 | `Attest` | `data_token` only | `Options.Endpoint` |
-| `Verify`, `AuditLog`, gateway selection | `session_token` only | `Options.Endpoint` |
+| `Verify`, gateway selection | `session_token` only | `Options.Endpoint` |
 
 The two tokens are independent; no request carries both, and there is no
 fallback from one to the other.
+
+`AuditLog` returns `ErrAuditLogNotServed` and sends nothing. No CulperLink
+installation serves an audit view to an SDK credential: the auditor views
+are at `/api/v1/audit/v1/*` on your installation's operator console, behind
+an operator's login.
 
 The daemon is found at `Options.Tunnel.DaemonPath`, else on `PATH`; or
 `Options.Tunnel.DaemonSocket` names one already running. A daemon this
@@ -125,6 +138,7 @@ gives the service's code and HTTP status.
 | `ErrDecryptionFailed` | the payload did not authenticate (tampered, or a different channel) |
 | `ErrKeyEpochRetired` | the payload's key epoch is retired; payloads decrypt for at most 13 hours |
 | `ErrInvalidSession`, `ErrAPIKeyExpired`, `ErrRateLimited` | as named; an expired key must be renewed, not retried |
+| `ErrLicenceExpired` | your installation's licence has lapsed: the key may be fine, and the installation's operator renews the licence |
 
 ## HTTPS-only mode
 

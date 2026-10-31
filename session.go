@@ -28,6 +28,17 @@ type sessionState struct {
 
 	refreshBeforeExpiry time.Duration
 
+	// renewalCapped is set when a renewal returned an expiry no later than
+	// the pair it replaced (CULPER-460 G-5). The service clamps renewal to
+	// the session's 12-hour cap, so from five minutes before the cap every
+	// renewal answers the same expiry, still inside refreshBeforeExpiry.
+	// Without this every call renewed until the cap passed, and the
+	// per-address limit the renew and API-key routes share turned that into
+	// refusals. Once set, the pair is used until cappedMargin before it
+	// expires, and then the API key is presented once for a new session.
+	renewalCapped bool
+	cappedMargin  time.Duration
+
 	// refreshMu serialises renew/authenticate, so one renewal does not
 	// become a herd of API-key exchanges (renewal is single-winner on the
 	// service).
@@ -35,15 +46,19 @@ type sessionState struct {
 }
 
 func newSessionState() *sessionState {
-	return &sessionState{refreshBeforeExpiry: 5 * time.Minute}
+	return &sessionState{refreshBeforeExpiry: 5 * time.Minute, cappedMargin: 30 * time.Second}
 }
 
 // fresh reports whether both halves are present and good for long enough.
 func (s *sessionState) fresh() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	buffer := s.refreshBeforeExpiry
+	if s.renewalCapped {
+		buffer = s.cappedMargin
+	}
 	return s.appToken != "" && s.dataToken != "" && s.current != nil &&
-		time.Until(s.current.ExpiresAt) > s.refreshBeforeExpiry
+		time.Until(s.current.ExpiresAt) > buffer
 }
 
 // ensureAuthenticated guarantees a usable pair, renewing near expiry (which
@@ -58,7 +73,9 @@ func (s *sessionState) ensureAuthenticated(ctx context.Context, c *Client) error
 	if s.fresh() {
 		return nil
 	}
-	if s.canRenew() {
+	// A capped session cannot be extended: renewing again would only return
+	// the same expiry, so go straight to the API key.
+	if s.canRenew() && !s.capped() {
 		if err := s.renew(ctx, c); err == nil {
 			return c.afterTokenRotation(ctx)
 		}
@@ -86,6 +103,12 @@ func (s *sessionState) canRenew() bool {
 	return s.appToken != ""
 }
 
+func (s *sessionState) capped() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.renewalCapped
+}
+
 func (s *sessionState) authenticate(ctx context.Context, c *Client) error {
 	// #nosec G117 -- the API key is the intended body of the auth request
 	body, err := json.Marshal(apiKeyAuthRequest{APIKey: c.opts.APIKey})
@@ -96,7 +119,13 @@ func (s *sessionState) authenticate(ctx context.Context, c *Client) error {
 	if err != nil {
 		return err
 	}
-	return s.exchange(c, req)
+	if err := s.exchange(c, req); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.renewalCapped = false
+	s.mu.Unlock()
+	return nil
 }
 
 // renew presents session_token and nothing else — not the API key, and not
@@ -113,7 +142,28 @@ func (s *sessionState) renew(ctx context.Context, c *Client) error {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
-	return s.exchange(c, req)
+	return s.installRenewal(c, req)
+}
+
+// installRenewal runs a renewal's exchange and records whether it extended
+// the session. An expiry no later than the one it replaced means the service
+// clamped it to the session's cap: renewing again would change nothing.
+func (s *sessionState) installRenewal(c *Client, req *http.Request) error {
+	s.mu.RLock()
+	var previous time.Time
+	if s.current != nil {
+		previous = s.current.ExpiresAt
+	}
+	s.mu.RUnlock()
+	if err := s.exchange(c, req); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if !previous.IsZero() && !s.current.ExpiresAt.After(previous) {
+		s.renewalCapped = true
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 // exchange issues a token-issuing request and installs the pair it returns.
@@ -200,6 +250,7 @@ func (s *sessionState) clear() {
 	defer s.mu.Unlock()
 	s.appToken, s.dataToken, s.endUserToken = "", "", ""
 	s.current = nil
+	s.renewalCapped = false
 }
 
 // RotateSession forces re-authentication with the API key. Most callers never

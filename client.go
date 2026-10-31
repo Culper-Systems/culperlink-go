@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,6 +29,7 @@ type Client struct {
 	httpClient *http.Client // the Control Plane's
 	session    *sessionState
 	tunnel     *tunnelState // nil in TunnelOff
+	maxRetries int          // Options.MaxRetries resolved: the default applied
 
 	mu     sync.RWMutex
 	closed bool
@@ -45,9 +47,10 @@ type Options struct {
 	// Timeout is the per-request timeout. Defaults to 30s.
 	Timeout time.Duration
 
-	// MaxRetries bounds the retries of a 5xx or a transport error. Defaults
-	// to 3.
-	MaxRetries int
+	// MaxRetries bounds the retries of a 5xx or a transport error. Nil means
+	// the default, 3. Retries(0) disables retries: an int field could not
+	// tell "unset" from 0, so 0 used to mean 3 (CULPER-460 G-30).
+	MaxRetries *int
 
 	// UserAgent defaults to "culperlink-go/<Version>".
 	UserAgent string
@@ -80,8 +83,12 @@ func NewClient(opts Options) (*Client, error) {
 	if opts.Timeout == 0 {
 		opts.Timeout = 30 * time.Second
 	}
-	if opts.MaxRetries == 0 {
-		opts.MaxRetries = 3
+	maxRetries := defaultMaxRetries
+	if opts.MaxRetries != nil {
+		if *opts.MaxRetries < 0 {
+			return nil, errNegativeRetries
+		}
+		maxRetries = *opts.MaxRetries
 	}
 	if opts.UserAgent == "" {
 		opts.UserAgent = "culperlink-go/" + Version
@@ -94,7 +101,7 @@ func NewClient(opts Options) (*Client, error) {
 		return nil, ErrInvalidTunnelMode
 	}
 
-	c := &Client{opts: opts, session: newSessionState()}
+	c := &Client{opts: opts, session: newSessionState(), maxRetries: maxRetries}
 
 	hc := opts.HTTPClient
 	if hc == nil {
@@ -225,7 +232,7 @@ func (c *Client) send(ctx context.Context, p plane, method, path string, body []
 		resp    *http.Response
 		lastErr error
 	)
-	for attempt := 0; attempt <= c.opts.MaxRetries; attempt++ {
+	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
 			if err := sleepCtx(ctx, backoff(attempt-1)); err != nil {
 				return err
@@ -261,7 +268,7 @@ func (c *Client) send(ctx context.Context, p plane, method, path string, body []
 		if lastErr == nil && resp.StatusCode < 500 {
 			break
 		}
-		if attempt == c.opts.MaxRetries {
+		if attempt == c.maxRetries {
 			break // keep the last 5xx so the caller sees what the service said
 		}
 		if resp != nil {
@@ -276,7 +283,7 @@ func (c *Client) send(ctx context.Context, p plane, method, path string, body []
 			}
 			return tunnelUnavailable("%s", errClass(lastErr))
 		}
-		return fmt.Errorf("culperlink: request failed after %d retries: %w", c.opts.MaxRetries, lastErr)
+		return fmt.Errorf("culperlink: request failed after %d retries: %w", c.maxRetries, lastErr)
 	}
 	defer drainAndClose(resp)
 	return decodeResponse(resp, out)
@@ -362,3 +369,51 @@ func errClass(err error) string {
 		err = inner
 	}
 }
+
+// defaultMaxRetries is the retry count when Options.MaxRetries is nil.
+const defaultMaxRetries = 3
+
+var errNegativeRetries = errors.New("culperlink: Options.MaxRetries must not be negative")
+
+// Retries returns a pointer to n, for Options.MaxRetries: Retries(0) turns
+// retries off, and leaving the field nil keeps the default of 3.
+func Retries(n int) *int { return &n }
+
+// redactedAPIKey stands in for the API key wherever an Options or a Client is
+// printed (CULPER-460 G-11). Logging the options or the client is routine in
+// error handlers and debug output, and fmt's %v, %+v and %#v print every
+// field, so without these methods a routine debug line carried the
+// long-lived credential in full.
+const redactedAPIKey = "[REDACTED]"
+
+// optionsNoMethods is Options without its methods, so formatting it does not
+// recurse into String.
+type optionsNoMethods Options
+
+func (o Options) redacted() optionsNoMethods {
+	if o.APIKey != "" {
+		o.APIKey = redactedAPIKey
+	}
+	return optionsNoMethods(o)
+}
+
+// String formats the options with the API key redacted. It also serves %v
+// and %+v.
+func (o Options) String() string { return fmt.Sprintf("%+v", o.redacted()) }
+
+// GoString formats the options for %#v with the API key redacted.
+func (o Options) GoString() string {
+	return strings.Replace(fmt.Sprintf("%#v", o.redacted()), "optionsNoMethods{", "Options{", 1)
+}
+
+// String names the client by its endpoint and nothing else: the session's
+// tokens and the API key it holds are never printed.
+func (c *Client) String() string {
+	if c == nil {
+		return "culperlink.Client(nil)"
+	}
+	return fmt.Sprintf("culperlink.Client{Endpoint: %q}", c.opts.Endpoint)
+}
+
+// GoString is String, for %#v.
+func (c *Client) GoString() string { return c.String() }

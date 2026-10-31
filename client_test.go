@@ -89,7 +89,7 @@ func TestQuickstartCallsCarryTheirPlanesCredential(t *testing.T) {
 		t.Fatalf("wrong channel: %v, want ErrDecryptionFailed (and ErrEncryptionFailed)", err)
 	}
 	var api *APIError
-	if _, err := c.Decrypt(ctx, sealed, "conversation-2"); !errors.As(err, &api) || api.Code != "DECRYPTION_FAILED" || api.StatusCode != 400 {
+	if _, err := c.Decrypt(ctx, sealed, "conversation-2"); !errors.As(err, &api) || api.Code != "DECRYPTION_FAILED" || api.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("wrong channel should keep the service's code and status: %v", err)
 	}
 	proof, err := c.Attest(ctx, "doc", []byte("fingerprint"))
@@ -100,9 +100,14 @@ func TestQuickstartCallsCarryTheirPlanesCredential(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Verify = %v, %v", ok, err)
 	}
+	// No installation serves an audit log to an SDK credential: AuditLog
+	// refuses, says where the views are, and sends nothing (G-10).
 	entries, err := c.AuditLog(ctx, AuditLogOptions{From: "2026-10-01"})
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("AuditLog = %v, %v", entries, err)
+	if !errors.Is(err, ErrAuditLogNotServed) || entries != nil || !strings.Contains(err.Error(), "/api/v1/audit/v1/") {
+		t.Fatalf("AuditLog = %v, %v; want ErrAuditLogNotServed", entries, err)
+	}
+	if n := cp.hit("/audit/v1/access"); n != 0 {
+		t.Fatalf("AuditLog sent %d requests", n)
 	}
 	if v := cp.v.get(); len(v) > 0 {
 		t.Fatalf("plane violations: %v", v)
@@ -130,14 +135,31 @@ func TestTokenExchangeErrors(t *testing.T) {
 
 	cp.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Path == "/sdk/v1/auth/api-key" {
-			apiErr(w, http.StatusUnauthorized, "API_KEY_EXPIRED", "renew at /billing/renew")
+			apiErr(w, http.StatusForbidden, "API_KEY_EXPIRED", "renew at /billing/renew")
 			return true
 		}
 		return false
 	})
 	c2 := offClient(t, cp)
-	if err := c2.Connect(context.Background()); !errors.Is(err, ErrAPIKeyExpired) || errors.Is(err, ErrInvalidSession) {
-		t.Fatalf("expired key: %v, want ErrAPIKeyExpired and not ErrInvalidSession", err)
+	if err := c2.Connect(context.Background()); !errors.Is(err, ErrAPIKeyExpired) || errors.Is(err, ErrInvalidSession) ||
+		errors.Is(err, ErrLicenceExpired) || !errors.As(err, &api) || api.StatusCode != http.StatusForbidden {
+		t.Fatalf("expired key: %v, want ErrAPIKeyExpired carrying 403, and neither ErrInvalidSession nor ErrLicenceExpired", err)
+	}
+
+	// The installation's licence, not the key (CULPER-461 G-13): its own
+	// sentinel, so the caller looks in the right place.
+	cp.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path == "/sdk/v1/auth/api-key" {
+			apiErr(w, http.StatusForbidden, "LICENCE_EXPIRED", "this installation's licence has expired")
+			return true
+		}
+		return false
+	})
+	c3 := offClient(t, cp)
+	err = c3.Connect(context.Background())
+	if !errors.Is(err, ErrLicenceExpired) || errors.Is(err, ErrAPIKeyExpired) || errors.Is(err, ErrInvalidSession) ||
+		!errors.As(err, &api) || api.Code != "LICENCE_EXPIRED" || api.StatusCode != http.StatusForbidden {
+		t.Fatalf("lapsed licence: %v, want ErrLicenceExpired carrying LICENCE_EXPIRED/403, and neither ErrAPIKeyExpired nor ErrInvalidSession", err)
 	}
 }
 
@@ -197,7 +219,7 @@ func TestRetriesReplayTheBody(t *testing.T) {
 		bodies = append(bodies, b)
 		mu.Unlock()
 		if fails.Add(1) <= 2 {
-			apiErr(w, http.StatusServiceUnavailable, "UNAVAILABLE", "try again")
+			apiErr(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE", "service temporarily unavailable")
 			return true
 		}
 		r.Body = io.NopCloser(bytes.NewReader(b))
@@ -243,16 +265,16 @@ func TestPersistentFiveHundredIsTheServicesError(t *testing.T) {
 	cp := newFakeCP(t)
 	cp.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Path == "/sdk/v1/verify" {
-			apiErr(w, http.StatusInternalServerError, "INTERNAL", "boom")
+			apiErr(w, http.StatusInternalServerError, "INTERNAL_ERROR", "boom")
 			return true
 		}
 		return false
 	})
-	c := offClient(t, cp, func(o *Options) { o.MaxRetries = 1 })
+	c := offClient(t, cp, func(o *Options) { o.MaxRetries = Retries(1) })
 	_, err := c.Verify(context.Background(), "p")
 	var api *APIError
-	if !errors.As(err, &api) || api.Code != "INTERNAL" {
-		t.Fatalf("Verify: %v, want the service's INTERNAL", err)
+	if !errors.As(err, &api) || api.Code != "INTERNAL_ERROR" {
+		t.Fatalf("Verify: %v, want the service's INTERNAL_ERROR", err)
 	}
 }
 
@@ -302,5 +324,114 @@ func second[T any](_ T, err error) error { return err }
 func TestTierValues(t *testing.T) {
 	if TierSovereign != "sovereign" || TierEnterprise != "enterprise" || TierAIInfrastructure != "ai_infrastructure" {
 		t.Fatal("tier values drifted from the service's vocabulary")
+	}
+}
+
+// TestCallsNearTheSessionCapRenewOnce is CULPER-460 G-5. The service clamps a
+// renewal to the session's 12-hour cap, so from five minutes before it every
+// renewal answers the same expiry, still inside the refresh window. The
+// client used to renew on every call there, and the per-address limit shared
+// with the API-key route turned that into refusals. It now renews once, uses
+// the pair until shortly before the cap, then presents the API key once.
+func TestCallsNearTheSessionCapRenewOnce(t *testing.T) {
+	cp := newFakeCP(t)
+	cp.mu.Lock()
+	cp.capAt = time.Now().Add(200 * time.Second).UTC()
+	cp.mu.Unlock()
+	c := offClient(t, cp)
+	ctx := context.Background()
+
+	for i := 0; i < 10; i++ {
+		if _, err := c.Encrypt(ctx, []byte("p"), "ch"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := cp.hit("/sdk/v1/auth/renew"); n != 1 {
+		t.Fatalf("renewals for 10 calls = %d, want 1", n)
+	}
+	if n := cp.hit("/sdk/v1/auth/api-key"); n != 1 {
+		t.Fatalf("api-key exchanges = %d, want 1", n)
+	}
+
+	// Shortly before the cap: one API-key exchange, no further renewal.
+	cp.mu.Lock()
+	cp.capAt = time.Time{}
+	cp.mu.Unlock()
+	c.session.mu.Lock()
+	c.session.cappedMargin = 10 * time.Minute
+	c.session.mu.Unlock()
+	for i := 0; i < 5; i++ {
+		if _, err := c.Encrypt(ctx, []byte("p"), "ch"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := cp.hit("/sdk/v1/auth/api-key"); n != 2 {
+		t.Fatalf("api-key exchanges = %d, want 2", n)
+	}
+	if n := cp.hit("/sdk/v1/auth/renew"); n != 1 {
+		t.Fatalf("renewals = %d, want still 1", n)
+	}
+}
+
+// TestEncryptRefusedSessionIsASessionError is CULPER-460 G-14: a refused data
+// token on Encrypt is a session problem, not an encryption failure. It used
+// to match ErrEncryptionFailed as well, so a caller (or culperlink-mcp) that
+// checks ErrEncryptionFailed first reported a revoked session as an
+// encryption failure. Python and TypeScript raise InvalidSessionError here.
+func TestEncryptRefusedSessionIsASessionError(t *testing.T) {
+	cp := newFakeCP(t)
+	cp.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path != "/sdk/v1/encrypt" {
+			return false
+		}
+		apiErr(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid or expired session")
+		return true
+	})
+	c := offClient(t, cp)
+	_, err := c.Encrypt(context.Background(), []byte("p"), "ch")
+	if !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("errors.Is(err, ErrInvalidSession) = false, err = %v", err)
+	}
+	if errors.Is(err, ErrEncryptionFailed) {
+		t.Errorf("a refused session matched ErrEncryptionFailed: %v", err)
+	}
+	var api *APIError
+	if !errors.As(err, &api) || api.Code != "UNAUTHORIZED" || api.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the service's code and status were dropped: %v", err)
+	}
+}
+
+// TestMaxRetriesZeroMeansNoRetries is CULPER-460 G-30: MaxRetries 0 used to
+// be indistinguishable from unset and silently meant 3. Retries(0) is now one
+// attempt; nil keeps the default of 3; a negative count is refused.
+func TestMaxRetriesZeroMeansNoRetries(t *testing.T) {
+	tests := []struct {
+		name         string
+		maxRetries   *int
+		wantAttempts int
+	}{
+		{"zero is no retries", Retries(0), 1},
+		{"one is one retry", Retries(1), 2},
+		{"nil is the default", nil, defaultMaxRetries + 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := newFakeCP(t)
+			cp.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
+				if r.URL.Path != "/sdk/v1/verify" {
+					return false
+				}
+				apiErr(w, http.StatusServiceUnavailable, "ATTESTATION_UNAVAILABLE", "attestation service unavailable")
+				return true
+			})
+			c := offClient(t, cp, func(o *Options) { o.MaxRetries = tc.maxRetries })
+			_, _ = c.Verify(context.Background(), "proof-abc")
+			if got := cp.hit("/sdk/v1/verify"); got != tc.wantAttempts {
+				t.Fatalf("attempts = %d, want %d", got, tc.wantAttempts)
+			}
+		})
+	}
+	if _, err := NewClient(Options{APIKey: "k", Endpoint: "https://x.example", MaxRetries: Retries(-1)}); err == nil {
+		t.Fatal("a negative MaxRetries was accepted")
 	}
 }
