@@ -31,6 +31,11 @@ func TestGeofenceListsArePinned(t *testing.T) {
 		{CUIDefenseCSI, []string{"US"}, wantGovCloud, wantITAR},
 		{CUIExportControl, []string{"US"}, nil, wantITAR},
 		{CUINuclear, []string{"US"}, wantGovCloud, nil},
+		{CUINavalReactors, []string{"US"}, wantGovCloud, nil},
+		{CUIIntelligence, []string{"US"}, wantGovCloud, nil},
+		{CUIExportControlled, []string{"US"}, nil, wantITAR},
+		{CUIHealth, []string{"US"}, nil, nil},
+		{CUILawEnforcement, []string{"US"}, nil, nil},
 	}
 	for _, tc := range tests {
 		t.Run(string(tc.marking), func(t *testing.T) {
