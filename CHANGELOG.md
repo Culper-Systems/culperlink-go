@@ -54,5 +54,24 @@ The Go SDK's first release from its own repository (CULPER-452).
   SP-EXPT, SP-NUC, SP-NNPI, SP-INTEL, SP-LEI, SP-ECI and SP-CRIT); the
   client-side geofence covers SP-ECI (ITAR) and SP-NNPI and SP-INTEL
   (GovCloud).
+- Audit fix batch 11 (CulperLink CULPER-466), before the first publish:
+  - one retry policy, the same in all four CulperLink clients (G-12, G-21):
+    a request is sent again only when the connection failed before it was
+    written, or when it is a `GET` that met a 502, 504, a code-less 503 or a
+    timeout. A `POST` that was sent is never sent again, so `Attest` no
+    longer writes duplicate records and a refused gateway selection is
+    recorded once. The rate limiter's `Retry-After` is honoured once per call
+    when it is ten seconds or less. A 503 with a service code is final. The
+    "respects Retry-After" and "retry budget is spent" sentences are now
+    true or gone. A request that met a dead tunnel is no longer resent in the
+    same call; the next call re-establishes the tunnel;
+  - new `ErrRateLimitUnavailable` (`RATE_LIMIT_UNAVAILABLE`, 503) and
+    `ErrSelectionNotConfigured` (`GATEWAY_SELECTION_NOT_CONFIGURED`, 503,
+    which the server used to send as `GATEWAY_UNAVAILABLE`, G-32);
+    `APIError.RetryAfter` is read from the `Retry-After` header when the body
+    names none;
+  - `Options.Tunnel.DaemonSocket` must be a Unix socket owned by your user,
+    checked before anything is sent to it (G-27); errors from the daemon path
+    never carry a URL, an address or a port (G-26).
 - Mode `TunnelOff` is the HTTPS-only client, for an installation with no
   Data Plane node and for Windows.

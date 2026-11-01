@@ -129,16 +129,46 @@ does. Upgrade the daemon and this library to the same CulperLink release.
 Check with `errors.Is`; `errors.As(err, &apiErr)` with `*culperlink.APIError`
 gives the service's code and HTTP status.
 
-| Error | Meaning |
-| --- | --- |
-| `ErrTunnelDaemonNotFound` | no daemon at `DaemonPath` or on `PATH`; the message lists where it looked |
-| `ErrTunnelDaemonIncompatible` | the daemon's version is outside the supported range; the message names both versions |
-| `ErrTunnelUnavailable` | the tunnel could not be established, renewed or used (both errors above also match it) |
-| `ErrSovereignNodeUnavailable` | no compliant node: none in your pool, or none inside the geofence |
-| `ErrDecryptionFailed` | the payload did not authenticate (tampered, or a different channel) |
-| `ErrKeyEpochRetired` | the payload's key epoch is retired; payloads decrypt for at most 13 hours |
-| `ErrInvalidSession`, `ErrAPIKeyExpired`, `ErrRateLimited` | as named; an expired key must be renewed, not retried |
-| `ErrLicenceExpired` | your installation's licence has lapsed: the key may be fine, and the installation's operator renews the licence |
+| Error | Server code (HTTP) | Meaning |
+| --- | --- | --- |
+| `ErrTunnelDaemonNotFound` | none | no daemon at `DaemonPath` or on `PATH`; the message lists where it looked |
+| `ErrTunnelDaemonIncompatible` | none | the daemon's version is outside the supported range; the message names both versions |
+| `ErrTunnelUnavailable` | none | the tunnel could not be established, renewed or used, or `DaemonSocket` is not a Unix socket owned by your user (both errors above also match it). The message never names an address or a port |
+| `ErrSovereignNodeUnavailable` | `GATEWAY_UNAVAILABLE` (503) | no compliant node: none in your pool, or none inside the geofence |
+| `ErrSelectionNotConfigured` | `GATEWAY_SELECTION_NOT_CONFIGURED` (503) | your installation runs no gateway selection (no node registry). Deploy it, or use `TunnelOff` against an installation that serves encrypt itself |
+| `ErrDecryptionFailed` | `DECRYPTION_FAILED` (422) | the payload did not authenticate (tampered, a different channel, or a changed marking) |
+| `ErrKeyEpochRetired` | `KEY_EPOCH_RETIRED` (410) | the payload's key epoch is retired; payloads decrypt for at most 13 hours |
+| `ErrInvalidSession` | `UNAUTHORIZED` (401) | the key or the session was refused. The library does not sign in again on its own |
+| `ErrAPIKeyExpired` | `API_KEY_EXPIRED` (403) | the key is past its expiry: renew it; retrying will not help |
+| `ErrLicenceExpired` | `LICENCE_EXPIRED` (403) | your installation's licence has lapsed: the key may be fine, and the installation's operator renews the licence |
+| `ErrRateLimited` | `RATE_LIMITED` (429) | you are over your rate limit. `APIError.RetryAfter` says how long to wait |
+| `ErrRateLimitUnavailable` | `RATE_LIMIT_UNAVAILABLE` (503) | the installation could not count the request (its Redis is unreachable) and refused it. You did nothing wrong; `APIError.RetryAfter` says when to try again |
+
+## Retries
+
+The library sends a request again only when your installation cannot have
+acted on it:
+
+- a connection that failed before the request was written, any method, up
+  to `Options.MaxRetries` times (default 3);
+- a `GET` (`Verify`) that met a gateway's 502, 503 or 504, or a timeout, up to
+  `MaxRetries` times;
+- once, after waiting it out, a rate-limit refusal (`RATE_LIMITED` or
+  `RATE_LIMIT_UNAVAILABLE`) whose `Retry-After` is ten seconds or less.
+
+A `POST` that was sent (`Encrypt`, `Decrypt`, `Attest`, gateway selection,
+sign-in) is never sent again: a second copy would be a second attestation,
+routing record or session. A 503 with any other service code is final. The
+library never signs in again on its own after a refused session.
+`Retries(0)` turns off every resend.
+
+## The daemon socket
+
+`Options.Tunnel.DaemonSocket` must be a Unix socket owned by your user; the
+library checks before it sends anything, the data token included. One daemon
+serves one client: a second client connecting through the same socket
+replaces the first one's tunnel. Run a daemon per client, each with its own
+socket.
 
 ## HTTPS-only mode
 
