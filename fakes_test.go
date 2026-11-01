@@ -320,7 +320,9 @@ type fakeDaemon struct {
 	down        bool   // the proxy answers 502 as the real one does with no tunnel
 	connectErr  string // non-empty: connect fails with it
 	renewErr    string
-	httpAddr    string // reported http_addr; defaults to the proxy's
+	hold        time.Duration // when set, the node answers encrypt this late
+	encrypts    int           // encrypts the node received
+	httpAddr    string        // reported http_addr; defaults to the proxy's
 	connectReqs []map[string]any
 }
 
@@ -350,8 +352,18 @@ func (d *fakeDaemon) startProxy() {
 			return
 		}
 		d.mu.Lock()
-		down, connected := d.down, d.connected
+		down, connected, hold := d.down, d.connected, d.hold
+		if r.URL.Path == "/sdk/v1/encrypt" {
+			d.encrypts++
+		}
 		d.mu.Unlock()
+		if hold > 0 && r.URL.Path == "/sdk/v1/encrypt" {
+			select {
+			case <-time.After(hold):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		if down || !connected || r.URL.Host != nodeDataHost {
 			http.Error(w, proxyUnreachable, http.StatusBadGateway)
 			return

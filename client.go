@@ -47,9 +47,13 @@ type Options struct {
 	// Timeout is the per-request timeout. Defaults to 30s.
 	Timeout time.Duration
 
-	// MaxRetries bounds the retries of a 5xx or a transport error. Nil means
-	// the default, 3. Retries(0) disables retries: an int field could not
-	// tell "unset" from 0, so 0 used to mean 3 (CULPER-460 G-30).
+	// MaxRetries bounds how many times a request the server cannot have
+	// acted on is sent again: a connection that failed before the request
+	// was written, or a GET that met a gateway error or a timeout. A POST
+	// that was sent is never sent again. Nil means the default, 3.
+	// Retries(0) turns off every resend, the rate limiter's Retry-After
+	// included: an int field could not tell "unset" from 0, so 0 used to
+	// mean 3 (CULPER-460 G-30). See retry.go.
 	MaxRetries *int
 
 	// UserAgent defaults to "culperlink-go/<Version>".
@@ -219,7 +223,8 @@ type target struct {
 	tunnelled bool
 }
 
-// send is the one request path every plane goes through.
+// send is the one request path every plane goes through, under the retry
+// policy in retry.go.
 func (c *Client) send(ctx context.Context, p plane, method, path string, body []byte, out any) error {
 	if c.IsClosed() {
 		return ErrClientClosed
@@ -228,64 +233,59 @@ func (c *Client) send(ctx context.Context, p plane, method, path string, body []
 		return err
 	}
 
-	var (
-		resp    *http.Response
-		lastErr error
-	)
-	for attempt := 0; attempt <= c.maxRetries; attempt++ {
-		if attempt > 0 {
-			if err := sleepCtx(ctx, backoff(attempt-1)); err != nil {
-				return err
-			}
-		}
+	tunnelled := p == dataPlane && c.tunnel != nil
+	proxyFailed := false
+	resp, err := c.roundTrip(ctx, method, func(actx context.Context, track func(*http.Request) *http.Request) (*http.Response, error) {
+		proxyFailed = false
 		tgt := target{base: c.opts.Endpoint, client: c.httpClient}
-		if p == dataPlane && c.tunnel != nil {
+		if tunnelled {
 			// Decided per attempt: a tunnel the daemon gave up on between
 			// attempts is re-selected and re-established here.
-			t, err := c.tunnel.ensure(ctx, c)
+			t, err := c.tunnel.ensure(actx, c)
 			if err != nil {
-				return err
+				return nil, stopError{err}
 			}
 			tgt = t
 		}
-		req, err := newRequest(ctx, c, method, tgt.base+path, body)
+		req, err := newRequest(actx, c, method, tgt.base+path, body)
 		if err != nil {
-			return err
+			return nil, stopError{err}
 		}
 		if err := c.setCredential(req, p); err != nil {
-			return err
+			return nil, stopError{err}
 		}
-
-		resp, lastErr = tgt.client.Do(req)
-		if lastErr == nil && tgt.tunnelled && isProxyFailure(resp) {
-			drainAndClose(resp)
-			resp = nil
-			lastErr = tunnelUnavailable("the tunnel could not carry the request")
-		}
-		if lastErr != nil && tgt.tunnelled {
+		resp, err := tgt.client.Do(track(req))
+		if tgt.tunnelled && (err != nil || isProxyFailure(resp)) {
+			// The proxy, not the node, answered, or nothing did: ask the
+			// daemon, and drop a tunnel it has given up on so the next
+			// attempt or call re-establishes it.
+			proxyFailed = err == nil
 			c.tunnel.noteFailure(ctx)
 		}
-		if lastErr == nil && resp.StatusCode < 500 {
-			break
+		return resp, err
+	})
+	if err != nil {
+		var tErr *tunnelError
+		if errors.As(err, &tErr) || errors.Is(err, ErrSovereignNodeUnavailable) || errors.Is(err, ErrSelectionNotConfigured) {
+			return err
 		}
-		if attempt == c.maxRetries {
-			break // keep the last 5xx so the caller sees what the service said
+		if tunnelled && isTimeout(err) {
+			// A sent request that timed out is a timeout, not a tunnel
+			// failure: the node may have acted on it (retry.go, rule 3).
+			// The text names no address; the cause keeps Timeout().
+			return &timeoutError{cause: err}
 		}
-		if resp != nil {
-			drainAndClose(resp)
-			resp = nil
+		if tunnelled {
+			// The transport's text names the node's tunnel address and the
+			// proxy's port; the caller gets the class (G-26).
+			return &tunnelError{msg: "culperlink: tunnel unavailable: the tunnel could not carry the request (" + transportClass(err) + ")", cause: err}
 		}
-	}
-	if lastErr != nil {
-		if p == dataPlane && c.tunnel != nil {
-			if _, ok := lastErr.(*tunnelError); ok {
-				return lastErr
-			}
-			return tunnelUnavailable("%s", errClass(lastErr))
-		}
-		return fmt.Errorf("culperlink: request failed after %d retries: %w", c.maxRetries, lastErr)
+		return fmt.Errorf("culperlink: request failed: %w", err)
 	}
 	defer drainAndClose(resp)
+	if proxyFailed {
+		return tunnelUnavailable("the tunnel could not carry the request")
+	}
 	return decodeResponse(resp, out)
 }
 
@@ -339,7 +339,7 @@ func drainAndClose(resp *http.Response) {
 	_ = resp.Body.Close()
 }
 
-// backoff is 100ms, 200ms, 400ms, ...
+// backoff is the wait before the n-th transient retry: 100ms, 200ms, 400ms, ...
 func backoff(attempt int) time.Duration {
 	return time.Duration(100*(1<<attempt)) * time.Millisecond
 }
@@ -355,11 +355,10 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// errClass is the innermost cause of a tunnel failure. Go's transport errors
-// name the URL and the dialled address, which here are the node's tunnel
-// address and the proxy's; the innermost error ("connection refused",
-// "context deadline exceeded") names neither, so no address reaches a log
-// through this library's errors.
+// errClass is the innermost cause of a local failure: the daemon's control
+// socket, its executable, its directory. The innermost error ("connection
+// refused", "no such file or directory") names no path and no address. A
+// request's failure is classed by transportClass instead.
 func errClass(err error) string {
 	for {
 		inner := errors.Unwrap(err)

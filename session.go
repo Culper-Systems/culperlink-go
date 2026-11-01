@@ -115,11 +115,7 @@ func (s *sessionState) authenticate(ctx context.Context, c *Client) error {
 	if err != nil {
 		return fmt.Errorf("culperlink: marshal api-key auth: %w", err)
 	}
-	req, err := newRequest(ctx, c, http.MethodPost, c.opts.Endpoint+"/sdk/v1/auth/api-key", body)
-	if err != nil {
-		return err
-	}
-	if err := s.exchange(c, req); err != nil {
+	if err := s.exchange(ctx, c, "/sdk/v1/auth/api-key", body, ""); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -137,25 +133,20 @@ func (s *sessionState) renew(ctx context.Context, c *Client) error {
 	if tok == "" {
 		return ErrInvalidSession
 	}
-	req, err := newRequest(ctx, c, http.MethodPost, c.opts.Endpoint+"/sdk/v1/auth/renew", nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+tok)
-	return s.installRenewal(c, req)
+	return s.installRenewal(ctx, c, tok)
 }
 
 // installRenewal runs a renewal's exchange and records whether it extended
 // the session. An expiry no later than the one it replaced means the service
 // clamped it to the session's cap: renewing again would change nothing.
-func (s *sessionState) installRenewal(c *Client, req *http.Request) error {
+func (s *sessionState) installRenewal(ctx context.Context, c *Client, tok string) error {
 	s.mu.RLock()
 	var previous time.Time
 	if s.current != nil {
 		previous = s.current.ExpiresAt
 	}
 	s.mu.RUnlock()
-	if err := s.exchange(c, req); err != nil {
+	if err := s.exchange(ctx, c, "/sdk/v1/auth/renew", nil, tok); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -166,9 +157,23 @@ func (s *sessionState) installRenewal(c *Client, req *http.Request) error {
 	return nil
 }
 
-// exchange issues a token-issuing request and installs the pair it returns.
-func (s *sessionState) exchange(c *Client, req *http.Request) error {
-	resp, err := c.httpClient.Do(req)
+// exchange issues a token-issuing POST to path — body as its payload, and
+// bearer as its Authorization when set — and installs the pair it returns.
+// It goes through roundTrip (retry.go): a connection that failed before the
+// request was written, and the rate limiter's short Retry-After, are sent
+// again; an exchange that was sent is not, because a second one would mint a
+// second session.
+func (s *sessionState) exchange(ctx context.Context, c *Client, path string, body []byte, bearer string) error {
+	resp, err := c.roundTrip(ctx, http.MethodPost, func(actx context.Context, track func(*http.Request) *http.Request) (*http.Response, error) {
+		req, rerr := newRequest(actx, c, http.MethodPost, c.opts.Endpoint+path, body)
+		if rerr != nil {
+			return nil, stopError{rerr}
+		}
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		return c.httpClient.Do(track(req))
+	})
 	if err != nil {
 		return fmt.Errorf("culperlink: auth request: %w", err)
 	}

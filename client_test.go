@@ -203,8 +203,10 @@ func TestRenewalPresentsTheSessionTokenOnly(t *testing.T) {
 	}
 }
 
-// A retried request carries the same body every time (CULPER-331).
+// A request sent again carries the same body every time (CULPER-331). A POST
+// is sent again only under the rate limiter's short Retry-After now.
 func TestRetriesReplayTheBody(t *testing.T) {
+	countPauses(t)
 	cp := newFakeCP(t)
 	var fails atomic.Int32
 	var (
@@ -219,8 +221,9 @@ func TestRetriesReplayTheBody(t *testing.T) {
 		mu.Lock()
 		bodies = append(bodies, b)
 		mu.Unlock()
-		if fails.Add(1) <= 2 {
-			apiErr(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE", "service temporarily unavailable")
+		if fails.Add(1) <= 1 {
+			w.Header().Set("Retry-After", "1")
+			apiErr(w, http.StatusTooManyRequests, "RATE_LIMITED", "slow down")
 			return true
 		}
 		r.Body = io.NopCloser(bytes.NewReader(b))
@@ -232,8 +235,8 @@ func TestRetriesReplayTheBody(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(bodies) != 3 {
-		t.Fatalf("attempts = %d, want 3", len(bodies))
+	if len(bodies) != 2 {
+		t.Fatalf("attempts = %d, want 2", len(bodies))
 	}
 	for i, b := range bodies {
 		if !bytes.Equal(b, bodies[0]) || len(b) == 0 {
@@ -406,6 +409,7 @@ func TestEncryptRefusedSessionIsASessionError(t *testing.T) {
 // be indistinguishable from unset and silently meant 3. Retries(0) is now one
 // attempt; nil keeps the default of 3; a negative count is refused.
 func TestMaxRetriesZeroMeansNoRetries(t *testing.T) {
+	countPauses(t)
 	tests := []struct {
 		name         string
 		maxRetries   *int
@@ -422,7 +426,9 @@ func TestMaxRetriesZeroMeansNoRetries(t *testing.T) {
 				if r.URL.Path != "/sdk/v1/verify" {
 					return false
 				}
-				apiErr(w, http.StatusServiceUnavailable, "ATTESTATION_UNAVAILABLE", "attestation service unavailable")
+				// A gateway's 502: rule 2 sends a GET again. A 503 with a
+				// service code would be definitive and prove nothing here.
+				http.Error(w, "bad gateway", http.StatusBadGateway)
 				return true
 			})
 			c := offClient(t, cp, func(o *Options) { o.MaxRetries = tc.maxRetries })
