@@ -9,7 +9,13 @@ package culperlink
 //   - spawnDaemon: a private directory, -exit-with-parent, stdin held;
 //   - daemon.call: one JSON request and one JSON reply per connection;
 //   - checkDaemonVersion: the range, before any token is handed over;
-//   - tunnelState: select → connect → proxy, renew, status, close.
+//   - tunnelState: select → connect → proxy, renew, status, close;
+//   - checkDaemonSocket (socket_unix.go): the socket is this user's.
+//
+// Every error from this path is a fixed prefix and a short class, with the
+// service's code when there was one. It never carries a URL, an address or
+// a port: the daemon's own reply text passes through daemonDetail, which
+// keeps it only when it names none (CulperLink audit finding G-26).
 
 import (
 	"bufio"
@@ -26,6 +32,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -108,6 +115,16 @@ type TunnelOptions struct {
 	// DaemonSocket is the control socket of a daemon already running. When
 	// set nothing is started, and Close leaves the daemon running (it
 	// disconnects the tunnel this client connected).
+	//
+	// Before anything is sent to it — the data token is, on connect — the
+	// path must be a Unix socket owned by this process's user id; anything
+	// else is ErrTunnelUnavailable and nothing is sent. On Windows, where
+	// the tunnel modes are not available, the check is skipped.
+	//
+	// One daemon serves one client. The daemon holds one tunnel, and a
+	// second client's connect on the same socket replaces the first one's
+	// tunnel, by the daemon's design; two clients need two daemons, each
+	// with its own socket.
 	DaemonSocket string
 
 	// DaemonLogLevel is the -log-level of a daemon this client starts:
@@ -593,6 +610,12 @@ func (ts *tunnelState) daemonHandle(ctx context.Context) (*daemon, error) {
 		ts.mu.Unlock()
 	}
 	if ts.opts.DaemonSocket != "" {
+		// A caller-named socket is checked before anything is sent to it:
+		// the first thing sent is the status probe, and then the data token
+		// (G-27).
+		if err := checkDaemonSocket(ts.opts.DaemonSocket); err != nil {
+			return nil, err
+		}
 		d = &daemon{socket: ts.opts.DaemonSocket}
 	} else {
 		path, err := locateDaemon(ts.opts.DaemonPath)
@@ -600,6 +623,12 @@ func (ts *tunnelState) daemonHandle(ctx context.Context) (*daemon, error) {
 			return nil, err
 		}
 		if d, err = spawnDaemon(ctx, path, ts.opts.DaemonLogLevel); err != nil {
+			return nil, err
+		}
+		// The socket this client's own daemon opened, in a directory only
+		// this user can read, is held to the same check.
+		if err := checkDaemonSocket(d.socket); err != nil {
+			d.stop()
 			return nil, err
 		}
 	}
@@ -656,11 +685,7 @@ func (ts *tunnelState) establish(ctx context.Context, c *Client) (*target, error
 		return nil, err
 	}
 	if !rep.OK {
-		msg := rep.Error
-		if msg == "" {
-			msg = "connect refused"
-		}
-		return nil, tunnelUnavailable("%s", msg)
+		return nil, tunnelUnavailable("the daemon could not connect the tunnel (%s)", daemonDetail(rep.Error, "connect refused"))
 	}
 	st := daemonStatus{}
 	if rep.Status != nil {
@@ -787,11 +812,7 @@ func (ts *tunnelState) renewLease(ctx context.Context, dataToken string) error {
 		return err
 	}
 	if !rep.OK {
-		msg := rep.Error
-		if msg == "" {
-			msg = "refused"
-		}
-		return tunnelUnavailable("lease renewal after token renewal: %s", msg)
+		return tunnelUnavailable("lease renewal after token renewal was refused (%s)", daemonDetail(rep.Error, "refused"))
 	}
 	if rep.Status != nil {
 		ts.mu.Lock()
@@ -915,12 +936,21 @@ func (c *Client) selectGateways(ctx context.Context) ([]GatewayDescriptor, *daem
 			switch {
 			case api.Code == "GATEWAY_UNAVAILABLE":
 				return nil, nil, fmt.Errorf("%w: %w", ErrSovereignNodeUnavailable, api)
+			case api.Code == codeSelectionNotConfigured:
+				// The installation's deployment, not the organisation's
+				// policy (G-32): its own sentinel, not the sovereign one.
+				return nil, nil, fmt.Errorf("%w (set Options.Tunnel.Mode = TunnelOff for an installation that serves encrypt itself): %w",
+					ErrSelectionNotConfigured, api)
 			case api.StatusCode == http.StatusNotFound:
-				return nil, nil, fmt.Errorf("%w: gateway selection is not served by this installation "+
-					"(set Options.Tunnel.Mode = TunnelOff for an HTTPS-only installation): %w", ErrTunnelUnavailable, api)
+				return nil, nil, &tunnelError{msg: "culperlink: tunnel unavailable: gateway selection is not served by this installation " +
+					"(set Options.Tunnel.Mode = TunnelOff for an HTTPS-only installation)", cause: api}
 			}
+			return nil, nil, &tunnelError{msg: "culperlink: tunnel unavailable: gateway selection failed (" + api.Code + ")", cause: err}
 		}
-		return nil, nil, fmt.Errorf("%w: gateway selection: %w", ErrTunnelUnavailable, err)
+		if errors.Is(err, ErrInvalidSession) || errors.Is(err, ErrClientClosed) {
+			return nil, nil, err
+		}
+		return nil, nil, &tunnelError{msg: "culperlink: tunnel unavailable: gateway selection failed (" + transportClass(err) + ")", cause: err}
 	}
 	fence := geofenceFor(t.CUIMarking)
 	kept := make([]GatewayDescriptor, 0, len(resp.Candidates))
@@ -980,4 +1010,23 @@ func (p *TunnelDNSPolicy) UnmarshalJSON(b []byte) error {
 	}
 	*p = TunnelDNSPolicy(v)
 	return nil
+}
+
+// addressish matches what daemonDetail refuses to pass on: a dotted address,
+// a port, a URL or a bracketed IPv6 address.
+var addressish = regexp.MustCompile(`\d\.\d|:\d|://|\[`)
+
+// daemonDetail is the daemon's error text when it names no address, URL or
+// port, and a fixed word otherwise. A daemon of this release replies with a
+// class ("connect: pin_mismatch"); an older or a foreign one may reply with
+// the raw transport error, which names the node.
+func daemonDetail(s, fallback string) string {
+	s = strings.TrimSpace(s)
+	switch {
+	case s == "":
+		return fallback
+	case addressish.MatchString(s):
+		return fallback + ": detail withheld, it named an address"
+	}
+	return s
 }

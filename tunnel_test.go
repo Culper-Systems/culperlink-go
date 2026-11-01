@@ -356,8 +356,62 @@ func TestTunnelThatStaysDownIsTunnelUnavailable(t *testing.T) {
 	if !errors.Is(err, ErrTunnelUnavailable) {
 		t.Fatalf("Encrypt: %v, want ErrTunnelUnavailable", err)
 	}
-	if strings.Contains(err.Error(), "10.200.0.1") || strings.Contains(err.Error(), "127.0.0.1") {
+	if strings.Contains(err.Error(), "10.200.0.1") || strings.Contains(err.Error(), "127.0.0.1") || addressLike.MatchString(err.Error()) {
 		t.Fatalf("the error names an address: %v", err)
+	}
+}
+
+// The daemon's own reply text reaches the caller only when it names no
+// address (G-26). An older daemon replied to a failed connect with the raw
+// transport error, which carried the node's handshake URL; this one is a
+// dial error carrying 127.0.0.1:1.
+func TestDaemonRepliesNamingAnAddressAreWithheld(t *testing.T) {
+	skipWithoutUnixSockets(t)
+	cp := newFakeCP(t)
+	d := newFakeDaemon(t, "0.2.0")
+	d.set(func(d *fakeDaemon) {
+		d.connectErr = `connect: Post "https://127.0.0.1:1/sdk/v1/tunnel/handshake": dial tcp 127.0.0.1:1: connect: connection refused`
+	})
+	c := tunnelClient(t, cp, d)
+	err := c.Connect(context.Background())
+	if !errors.Is(err, ErrTunnelUnavailable) {
+		t.Fatalf("Connect: %v, want ErrTunnelUnavailable", err)
+	}
+	if addressLike.MatchString(err.Error()) || strings.Contains(err.Error(), "127.0.0.1") {
+		t.Fatalf("the error names an address or a port: %q", err.Error())
+	}
+	// A class with no address in it is passed on: it is the useful part.
+	d.set(func(d *fakeDaemon) { d.connectErr = "connect: pin_mismatch" })
+	err = tunnelClient(t, cp, d).Connect(context.Background())
+	if !errors.Is(err, ErrTunnelUnavailable) || !strings.Contains(err.Error(), "pin_mismatch") {
+		t.Fatalf("Connect: %v, want ErrTunnelUnavailable naming pin_mismatch", err)
+	}
+}
+
+// GATEWAY_SELECTION_NOT_CONFIGURED is the installation's deployment, not
+// the organisation's policy: ErrSelectionNotConfigured, never the sovereign
+// error, and selection is asked once (G-32).
+func TestSelectionNotConfiguredIsItsOwnError(t *testing.T) {
+	skipWithoutUnixSockets(t)
+	cp := newFakeCP(t)
+	d := newFakeDaemon(t, "0.2.0")
+	cp.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path == "/sdk/v1/gateways/select" {
+			apiErr(w, http.StatusServiceUnavailable, "GATEWAY_SELECTION_NOT_CONFIGURED", "gateway selection is not configured on this installation")
+			return true
+		}
+		return false
+	})
+	err := tunnelClient(t, cp, d, func(o *Options) { o.MaxRetries = Retries(2) }).Connect(context.Background())
+	if !errors.Is(err, ErrSelectionNotConfigured) || errors.Is(err, ErrSovereignNodeUnavailable) {
+		t.Fatalf("Connect: %v, want ErrSelectionNotConfigured and not ErrSovereignNodeUnavailable", err)
+	}
+	var api *APIError
+	if !errors.As(err, &api) || api.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("the service's 503 is not reachable: %v", err)
+	}
+	if n := cp.hit("/sdk/v1/gateways/select"); n != 1 {
+		t.Fatalf("selections = %d, want 1", n)
 	}
 }
 
