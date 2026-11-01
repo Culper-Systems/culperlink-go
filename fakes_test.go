@@ -321,6 +321,7 @@ type fakeDaemon struct {
 	connectErr  string // non-empty: connect fails with it
 	renewErr    string
 	hold        time.Duration // when set, the node answers encrypt this late
+	encrypts    int           // encrypts the node received
 	httpAddr    string        // reported http_addr; defaults to the proxy's
 	connectReqs []map[string]any
 }
@@ -352,6 +353,9 @@ func (d *fakeDaemon) startProxy() {
 		}
 		d.mu.Lock()
 		down, connected, hold := d.down, d.connected, d.hold
+		if r.URL.Path == "/sdk/v1/encrypt" {
+			d.encrypts++
+		}
 		d.mu.Unlock()
 		if hold > 0 && r.URL.Path == "/sdk/v1/encrypt" {
 			select {

@@ -3,14 +3,12 @@ package culperlink
 import (
 	"context"
 	"errors"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -402,13 +400,7 @@ func TestTunnelledTimeoutIsATimeoutAndNotResent(t *testing.T) {
 	if err := c.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	var encrypts atomic.Int32
-	d.set(func(d *fakeDaemon) { d.hold = 3 * time.Second })
-	d.proxy.Config.ConnState = func(_ net.Conn, st http.ConnState) {
-		if st == http.StateActive {
-			encrypts.Add(1)
-		}
-	}
+	d.set(func(d *fakeDaemon) { d.hold, d.encrypts = 3*time.Second, 0 })
 	_, err := c.Encrypt(context.Background(), []byte("p"), "ch")
 	if err == nil || !isTimeout(err) || errors.Is(err, ErrTunnelUnavailable) {
 		t.Fatalf("Encrypt = %v, want a timeout that is not ErrTunnelUnavailable", err)
@@ -416,8 +408,11 @@ func TestTunnelledTimeoutIsATimeoutAndNotResent(t *testing.T) {
 	if addressLike.MatchString(err.Error()) {
 		t.Fatalf("the error names an address or a port: %q", err.Error())
 	}
-	if n := encrypts.Load(); n != 1 {
-		t.Fatalf("requests the proxy served = %d, want 1", n)
+	d.mu.Lock()
+	n := d.encrypts
+	d.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("encrypts the node received = %d, want 1", n)
 	}
 }
 
