@@ -321,7 +321,7 @@ type fakeDaemon struct {
 	connectErr  string // non-empty: connect fails with it
 	renewErr    string
 	hold        time.Duration // when set, the node answers encrypt this late
-	httpAddr    string // reported http_addr; defaults to the proxy's
+	httpAddr    string        // reported http_addr; defaults to the proxy's
 	connectReqs []map[string]any
 }
 
