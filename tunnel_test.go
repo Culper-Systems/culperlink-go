@@ -3,12 +3,14 @@ package culperlink
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -385,6 +387,37 @@ func TestDaemonRepliesNamingAnAddressAreWithheld(t *testing.T) {
 	err = tunnelClient(t, cp, d).Connect(context.Background())
 	if !errors.Is(err, ErrTunnelUnavailable) || !strings.Contains(err.Error(), "pin_mismatch") {
 		t.Fatalf("Connect: %v, want ErrTunnelUnavailable naming pin_mismatch", err)
+	}
+}
+
+// A sent encrypt that timed out through the daemon is the timeout itself, not
+// ErrTunnelUnavailable, it is not sent again (retry.go, rule 3), and its text
+// names no address.
+func TestTunnelledTimeoutIsATimeoutAndNotResent(t *testing.T) {
+	skipWithoutUnixSockets(t)
+	countPauses(t)
+	cp := newFakeCP(t)
+	d := newFakeDaemon(t, "0.2.0")
+	c := tunnelClient(t, cp, d, func(o *Options) { o.MaxRetries = Retries(2); o.Timeout = time.Second })
+	if err := c.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var encrypts atomic.Int32
+	d.set(func(d *fakeDaemon) { d.hold = 3 * time.Second })
+	d.proxy.Config.ConnState = func(_ net.Conn, st http.ConnState) {
+		if st == http.StateActive {
+			encrypts.Add(1)
+		}
+	}
+	_, err := c.Encrypt(context.Background(), []byte("p"), "ch")
+	if err == nil || !isTimeout(err) || errors.Is(err, ErrTunnelUnavailable) {
+		t.Fatalf("Encrypt = %v, want a timeout that is not ErrTunnelUnavailable", err)
+	}
+	if addressLike.MatchString(err.Error()) {
+		t.Fatalf("the error names an address or a port: %q", err.Error())
+	}
+	if n := encrypts.Load(); n != 1 {
+		t.Fatalf("requests the proxy served = %d, want 1", n)
 	}
 }
 

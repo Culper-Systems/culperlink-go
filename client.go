@@ -269,6 +269,12 @@ func (c *Client) send(ctx context.Context, p plane, method, path string, body []
 		if errors.As(err, &tErr) || errors.Is(err, ErrSovereignNodeUnavailable) || errors.Is(err, ErrSelectionNotConfigured) {
 			return err
 		}
+		if tunnelled && isTimeout(err) {
+			// A sent request that timed out is a timeout, not a tunnel
+			// failure: the node may have acted on it (retry.go, rule 3).
+			// The text names no address; the cause keeps Timeout().
+			return &timeoutError{cause: err}
+		}
 		if tunnelled {
 			// The transport's text names the node's tunnel address and the
 			// proxy's port; the caller gets the class (G-26).

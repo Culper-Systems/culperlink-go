@@ -242,3 +242,15 @@ func decodeResponse(resp *http.Response, out any) error {
 	}
 	return nil
 }
+
+// timeoutError is a request through the tunnel that timed out. Its message
+// names no address; it is not ErrTunnelUnavailable, because the request was
+// sent and the node may have acted on it. errors.As finds the transport's
+// net.Error, whose Timeout() is true.
+type timeoutError struct{ cause error }
+
+func (e *timeoutError) Error() string {
+	return "culperlink: the request timed out after it was sent through the tunnel; it is not sent again"
+}
+
+func (e *timeoutError) Unwrap() error { return e.cause }
