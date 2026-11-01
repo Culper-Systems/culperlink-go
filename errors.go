@@ -32,6 +32,8 @@ var (
 
 	// ErrInvalidSession is returned when a token is rejected (expired,
 	// revoked or malformed) or a token exchange did not yield a usable pair.
+	// It is returned on the first refusal: the client does not present the
+	// API key again on its own (retry.go, rule 6).
 	ErrInvalidSession = errors.New("culperlink: invalid session")
 
 	// ErrEncryptionFailed matches a failed decrypt, because the service
@@ -55,9 +57,31 @@ var (
 	// outside its FIPS 140-3 boundary. No method returns it today.
 	ErrFIPSBoundary = errors.New("culperlink: operation not in FIPS boundary")
 
-	// ErrRateLimited is returned when the service's rate limit is exceeded
-	// and the retry budget is spent.
+	// ErrRateLimited is returned when the caller is over its rate limit
+	// (RATE_LIMITED, HTTP 429). A Retry-After of at most ten seconds is
+	// waited out once and the request sent again (retry.go, rule 4); a
+	// longer one, or a second refusal, is returned at once with the wait in
+	// APIError.RetryAfter.
 	ErrRateLimited = errors.New("culperlink: rate limited")
+
+	// ErrRateLimitUnavailable is returned when the installation could not
+	// count the request against its rate limit — its Redis was unreachable
+	// — and refused it (RATE_LIMIT_UNAVAILABLE, HTTP 503). The caller did
+	// nothing wrong: it is a sibling of ErrRateLimited, not the same thing,
+	// and the remedy is the installation operator's. The Retry-After (5
+	// seconds) is waited out once, as for ErrRateLimited, and a second
+	// refusal is returned with APIError.RetryAfter.
+	ErrRateLimitUnavailable = errors.New("culperlink: the installation cannot check its rate limit right now")
+
+	// ErrSelectionNotConfigured is returned by Connect, or the first Encrypt
+	// or Decrypt, when the installation runs no gateway selection
+	// (GATEWAY_SELECTION_NOT_CONFIGURED, HTTP 503): it has no node registry,
+	// so no node can be offered to anyone. It is not
+	// ErrSovereignNodeUnavailable, which is the organisation's policy
+	// leaving no eligible node. The remedy is the installation's: deploy its
+	// node registry, or set Options.Tunnel.Mode = TunnelOff for an
+	// installation that serves encrypt itself.
+	ErrSelectionNotConfigured = errors.New("culperlink: gateway selection is not configured on this installation")
 
 	// ErrAPIKeyExpired is returned when the API key is genuine but past its
 	// expiry (API_KEY_EXPIRED). Distinct from ErrInvalidSession on purpose:
@@ -87,8 +111,10 @@ var (
 	// carried by the tunnel: the daemon could not establish or renew it, the
 	// daemon could not be found, started or reached, or the installation
 	// does not serve gateway selection (an HTTPS-only one wants
-	// Options.Tunnel.Mode = TunnelOff). The message carries the daemon's
-	// error class; never a token or an address. ErrTunnelDaemonNotFound and
+	// Options.Tunnel.Mode = TunnelOff), or a caller-named DaemonSocket is not
+	// a Unix socket owned by this user. The message is a fixed prefix, a
+	// short class and the service's code when there was one; never a token,
+	// a URL, an address or a port. ErrTunnelDaemonNotFound and
 	// ErrTunnelDaemonIncompatible both match it as well.
 	ErrTunnelUnavailable = errors.New("culperlink: tunnel unavailable")
 
@@ -108,10 +134,13 @@ var (
 )
 
 // tunnelError is a tunnel failure with its own message that matches
-// ErrTunnelUnavailable and, when set, a more specific sentinel.
+// ErrTunnelUnavailable and, when set, a more specific sentinel. Its message
+// is safe to log; cause, when set, is reachable through errors.Is and
+// errors.As and is never printed.
 type tunnelError struct {
-	kind error // ErrTunnelDaemonNotFound, ErrTunnelDaemonIncompatible, or nil
-	msg  string
+	kind  error // ErrTunnelDaemonNotFound, ErrTunnelDaemonIncompatible, or nil
+	msg   string
+	cause error
 }
 
 func (e *tunnelError) Error() string { return e.msg }
@@ -119,6 +148,14 @@ func (e *tunnelError) Error() string { return e.msg }
 func (e *tunnelError) Is(target error) bool {
 	return target == ErrTunnelUnavailable || (e.kind != nil && target == e.kind)
 }
+
+func (e *tunnelError) Unwrap() error { return e.cause }
+
+// The service's codes this library names more than once.
+const (
+	codeRateLimitUnavailable   = "RATE_LIMIT_UNAVAILABLE"
+	codeSelectionNotConfigured = "GATEWAY_SELECTION_NOT_CONFIGURED"
+)
 
 // tunnelUnavailable is ErrTunnelUnavailable with a detail.
 func tunnelUnavailable(format string, args ...any) error {
@@ -151,6 +188,10 @@ func (e *APIError) Is(target error) bool {
 		return e.Code == "INVALID_SESSION" || e.Code == "SESSION_EXPIRED" || e.Code == "UNAUTHORIZED" || e.Code == "INVALID_CREDENTIAL"
 	case ErrRateLimited:
 		return e.Code == "RATE_LIMITED" || e.StatusCode == http.StatusTooManyRequests
+	case ErrRateLimitUnavailable:
+		return e.Code == codeRateLimitUnavailable
+	case ErrSelectionNotConfigured:
+		return e.Code == codeSelectionNotConfigured
 	case ErrEncryptionFailed, ErrDecryptionFailed:
 		return e.Code == "DECRYPTION_FAILED"
 	case ErrKeyEpochRetired:
@@ -181,12 +222,16 @@ func decodeResponse(resp *http.Response, out any) error {
 		var env errorEnvelope
 		if err := json.NewDecoder(resp.Body).Decode(&env); err == nil && env.Error != nil {
 			env.Error.StatusCode = resp.StatusCode
+			if env.Error.RetryAfter == 0 {
+				env.Error.RetryAfter = retryAfterHeader(resp)
+			}
 			return env.Error
 		}
 		return &APIError{
 			StatusCode: resp.StatusCode,
 			Code:       "UNKNOWN",
 			Message:    fmt.Sprintf("unexpected HTTP %d", resp.StatusCode),
+			RetryAfter: retryAfterHeader(resp),
 		}
 	}
 	if out == nil {

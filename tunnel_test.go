@@ -317,7 +317,10 @@ func TestPolicyIsHandedToTheDaemon(t *testing.T) {
 }
 
 // A request the tunnel could not carry asks the daemon; a tunnel it reports
-// down is re-selected and re-established on the next attempt.
+// down is dropped, and the next call re-selects and re-establishes it. The
+// call that met the dead tunnel is not sent again: the proxy's 502 cannot
+// say whether the node saw the encrypt, and a POST that may have been
+// received is never resent (retry.go, rule 3).
 func TestTunnelDownIsReestablished(t *testing.T) {
 	skipWithoutUnixSockets(t)
 	cp := newFakeCP(t)
@@ -329,7 +332,13 @@ func TestTunnelDownIsReestablished(t *testing.T) {
 	}
 	// The tunnel drops: the proxy answers 502 and the daemon reports down.
 	d.set(func(d *fakeDaemon) { d.down, d.connected = true, false })
-	if _, err := c.Encrypt(ctx, []byte("two"), "ch"); err != nil {
+	if _, err := c.Encrypt(ctx, []byte("two"), "ch"); !errors.Is(err, ErrTunnelUnavailable) {
+		t.Fatalf("Encrypt into the dropped tunnel: %v, want ErrTunnelUnavailable", err)
+	}
+	if n := cp.hit("/sdk/v1/gateways/select"); n != 1 {
+		t.Fatalf("selections = %d, want 1: the failed call is not sent again", n)
+	}
+	if _, err := c.Encrypt(ctx, []byte("three"), "ch"); err != nil {
 		t.Fatalf("Encrypt after the tunnel dropped: %v", err)
 	}
 	if n := cp.hit("/sdk/v1/gateways/select"); n != 2 {
