@@ -88,7 +88,10 @@
 // release package's `bin/culperlink-tunnel-<os>-<arch>`, installed on PATH
 // as `culperlink-tunnel` (or named directly by DaemonPath). Alternatively
 // Options.Tunnel.DaemonSocket names the control socket of a daemon already
-// running, and nothing is started.
+// running, and nothing is started. That socket must be a Unix socket owned
+// by this process's user, or nothing is sent to it; and one daemon serves
+// one client, because a second client's connect replaces the first one's
+// tunnel.
 //
 // A daemon this client starts runs with -exit-with-parent and holds this
 // process's end of a pipe as its stdin: it exits when the pipe closes, which
@@ -106,7 +109,9 @@
 // Plane call through the daemon's loopback HTTP proxy to the node's tunnel
 // address. A token renewal is followed, in the same call, by a lease renewal
 // with the new data_token (op "renew"). A tunnel the daemon reports down is
-// re-selected on the next Data Plane call. Close disconnects the tunnel and
+// re-selected on the next Data Plane call. Errors from this path carry a
+// short class and the service's code when there was one, never the node's
+// URL, address or port. Close disconnects the tunnel and
 // stops a daemon this client started; a daemon named by DaemonSocket is left
 // running.
 //
@@ -115,12 +120,30 @@
 // node, Options.Tunnel.Mode = TunnelOff is the HTTPS-only client: every call
 // goes to Options.Endpoint and no daemon is involved.
 //
-// # Retry discipline
+// # Retry policy
 //
-// Requests are retried on a 5xx or a transport error, up to
-// Options.MaxRetries times (nil means 3; Retries(0) means none) with
-// exponential backoff; a 4xx is returned on the first attempt. Every attempt
-// is a new request over a buffered body, so a retried Encrypt never sends an
-// empty payload, and every response is read to EOF and closed, so a retry
-// loop never leaks a connection (CULPER-331).
+// A request is sent again only when the server cannot have acted on it, or
+// when the request changes nothing (retry.go):
+//
+//  1. A connection that failed before the request was written — the dial,
+//     the TLS handshake, a refused or reset connection — is sent again, any
+//     method, up to Options.MaxRetries times.
+//  2. A GET is sent again on 502, 504, a 503 with no service error code, and
+//     a timeout, up to MaxRetries times.
+//  3. A POST that was sent is never sent again: attest appends a record,
+//     gateway selection writes a routing row, the token exchange mints a
+//     session, encrypt uses a nonce. Through the daemon, the proxy's "upstream
+//     unreachable" counts as sent.
+//  4. The rate limiter's refusal — 429 RATE_LIMITED, or 503
+//     RATE_LIMIT_UNAVAILABLE — is waited out once per call when its
+//     Retry-After is at most ten seconds, and the request sent once more. A
+//     longer wait, or a second refusal, is returned with APIError.RetryAfter.
+//  5. Any other 503 with a service code is definitive.
+//  6. A refused session is returned as ErrInvalidSession. The client does not
+//     present the API key again on its own.
+//
+// MaxRetries nil means 3; Retries(0) turns off every resend, rule 4's
+// included. Every attempt is a new request over a buffered body, so a resent
+// request never sends an empty payload, and every response is read to EOF
+// and closed, so a retry loop never leaks a connection (CULPER-331).
 package culperlink
