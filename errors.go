@@ -169,6 +169,11 @@ type APIError struct {
 	Message    string `json:"message"`
 	TraceID    string `json:"trace_id,omitempty"`
 	RetryAfter int    `json:"retry_after,omitempty"`
+	// Reason is the server's refusal class on INVALID_PASSKEY (CULPER-468):
+	// one of attestation_unverified, aaguid_not_allowed,
+	// user_verification_missing, sign_count_replay, challenge_expired. Empty
+	// on every other code. It names a class, never the matched material.
+	Reason string `json:"reason,omitempty"`
 }
 
 // Error implements the error interface.
