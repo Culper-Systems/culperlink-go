@@ -317,7 +317,10 @@ type fakeDaemon struct {
 	ops         []string
 	tokens      []string
 	connected   bool
-	down        bool   // the proxy answers 502 as the real one does with no tunnel
+	down        bool   // the proxy answers 502 not-sent as the real one does with no tunnel
+	sentFail    bool   // the proxy answers 502 sent: written, then the tunnel failed
+	proxyToken  string // reported as status.proxy_token and required by the proxy; "" plays a daemon before CULPER-467
+	refused     int    // requests the proxy refused 407
 	connectErr  string // non-empty: connect fails with it
 	renewErr    string
 	hold        time.Duration // when set, the node answers encrypt this late
@@ -333,7 +336,7 @@ func newFakeDaemon(t *testing.T, version any) *fakeDaemon {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	d := &fakeDaemon{socket: filepath.Join(dir, "c.sock"), version: version}
+	d := &fakeDaemon{socket: filepath.Join(dir, "c.sock"), version: version, proxyToken: fakeProxyToken}
 	ln, err := net.Listen("unix", d.socket)
 	if err != nil {
 		t.Fatal(err)
@@ -352,7 +355,14 @@ func (d *fakeDaemon) startProxy() {
 			return
 		}
 		d.mu.Lock()
-		down, connected, hold := d.down, d.connected, d.hold
+		if !fakeProxyAuthorized(r, d.proxyToken) {
+			d.refused++
+			d.mu.Unlock()
+			w.Header().Set("Proxy-Authenticate", `Basic realm="culperlink-tunnel"`)
+			http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
+			return
+		}
+		down, connected, hold, sentFail := d.down, d.connected, d.hold, d.sentFail
 		if r.URL.Path == "/sdk/v1/encrypt" {
 			d.encrypts++
 		}
@@ -365,13 +375,39 @@ func (d *fakeDaemon) startProxy() {
 			}
 		}
 		if down || !connected || r.URL.Host != nodeDataHost {
-			http.Error(w, proxyUnreachable, http.StatusBadGateway)
+			w.Header().Set(proxyUpstreamHeader, proxyNotSent)
+			http.Error(w, "upstream unreachable through the tunnel", http.StatusBadGateway)
+			return
+		}
+		if sentFail {
+			w.Header().Set(proxyUpstreamHeader, proxySent)
+			http.Error(w, "upstream failed through the tunnel after the request was sent", http.StatusBadGateway)
 			return
 		}
 		if !servePayload(w, r, &d.v, func(tok string) bool { return d.tokenSeen(tok) }) {
 			http.NotFound(w, r)
 		}
 	}))
+}
+
+// fakeProxyToken is the fake daemon's proxy token, as the real daemon
+// reports one (CULPER-467).
+const fakeProxyToken = "5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f"
+
+// fakeProxyAuthorized is the real proxy's rule: Basic, any user name, the
+// token as the password.
+func fakeProxyAuthorized(r *http.Request, token string) bool {
+	h := r.Header.Get("Proxy-Authorization")
+	scheme, cred, ok := strings.Cut(h, " ")
+	if !ok || !strings.EqualFold(scheme, "Basic") || token == "" {
+		return false
+	}
+	raw, err := base64.StdEncoding.DecodeString(cred)
+	if err != nil {
+		return false
+	}
+	_, pass, ok := strings.Cut(string(raw), ":")
+	return ok && pass == token
 }
 
 func (d *fakeDaemon) tokenSeen(tok string) bool {
@@ -412,6 +448,9 @@ func (d *fakeDaemon) status() map[string]any {
 		addr = d.proxy.Listener.Addr().String()
 	}
 	st := map[string]any{"state": state, "mode": "netstack", "http_addr": addr, "socks_addr": "127.0.0.1:1"}
+	if d.proxyToken != "" {
+		st["proxy_token"] = d.proxyToken
+	}
 	if d.connected {
 		st["candidate_id"] = fakeNodeID
 		st["node_tunnel_ip"] = nodeTunnelIP
@@ -481,6 +520,7 @@ func runFakeDaemonProcess(args []string) int {
 	_ = fs.String("socks", "", "")
 	_ = fs.String("http", "", "")
 	_ = fs.String("log-level", "", "")
+	_ = fs.String("proxy-token-file", "", "")
 	exitWithParent := fs.Bool("exit-with-parent", false, "")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -497,7 +537,7 @@ func runFakeDaemonProcess(args []string) int {
 	if version == "" {
 		version = "0.2.0"
 	}
-	d := &fakeDaemon{socket: *socket, version: version}
+	d := &fakeDaemon{socket: *socket, version: version, proxyToken: fakeProxyToken}
 	d.startProxy()
 	ln, err := net.Listen("unix", *socket)
 	if err != nil {

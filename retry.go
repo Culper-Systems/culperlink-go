@@ -23,10 +23,13 @@ package culperlink
 //     second copy is a duplicate, not a retry. Before this rule every 5xx and
 //     every transport error was retried for every method, and a refused
 //     selection was recorded four times (CulperLink audit finding G-12).
-//     Through the daemon, the proxy's 502 "upstream unreachable" counts as
-//     sent: the proxy cannot say whether the node saw the request. The
-//     tunnel is asked about and dropped if it is down, and the next call
-//     re-establishes it.
+//     Through the daemon, the proxy says in Culperlink-Proxy-Upstream
+//     whether the node saw the request (CULPER-467): "not-sent" — the dial
+//     into the tunnel failed — is rule 1 and is sent again whatever the
+//     method, as is a 407 (a stale proxy token); "sent" is a sent request.
+//     Either way the tunnel is asked about and dropped if it is down, and
+//     the next attempt or call re-establishes it. A 502 without the header
+//     is the node's, and sent.
 //  4. A 429 RATE_LIMITED, or a 503 RATE_LIMIT_UNAVAILABLE, is answered by
 //     the rate limiter before any handler runs, so the server did nothing.
 //     Its Retry-After is honoured once per call, any method: when it is
@@ -84,6 +87,15 @@ type stopError struct{ err error }
 func (e stopError) Error() string { return e.err.Error() }
 func (e stopError) Unwrap() error { return e.err }
 
+// notSentError is an attempt that the daemon's proxy refused before anything
+// reached the node (CULPER-467). The request's headers were written — to the
+// proxy — so the trace calls it sent; this says it was not, and rule 1
+// sends it again.
+type notSentError struct{ err error }
+
+func (e notSentError) Error() string { return e.err.Error() }
+func (e notSentError) Unwrap() error { return e.err }
+
 // roundTrip runs one call under the policy above and returns the response
 // the caller should decode, or the transport error of the last attempt.
 func (c *Client) roundTrip(ctx context.Context, method string, attempt attemptFunc) (*http.Response, error) {
@@ -104,7 +116,8 @@ func (c *Client) roundTrip(ctx context.Context, method string, attempt attemptFu
 			if ctx.Err() != nil {
 				return nil, err
 			}
-			retry := !sent.Load() || (method == http.MethodGet && isTimeout(err))
+			var notSent notSentError
+			retry := !sent.Load() || errors.As(err, &notSent) || (method == http.MethodGet && isTimeout(err))
 			if !retry || transient >= c.maxRetries {
 				return nil, err
 			}

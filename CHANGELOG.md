@@ -15,8 +15,9 @@ The Go SDK's first release from its own repository (CULPER-452).
   handing it a token, and refuses a proxy address that is not loopback.
 - No payload cryptography and no tunnel code in the library: it verifies the
   installation's TLS (chain and SPKI pins) with the standard library, which
-  is its only dependency. The tunnel's hybrid handshake (ML-KEM-768 + P-256) is
-  the daemon's.
+  is its only dependency. The tunnel's hybrid handshake (ML-KEM-768 + P-384
+  since CulperLink CULPER-467; P-256 before) is the daemon's, so this library
+  needed no change for the curve.
 - `go get github.com/culper-systems/culperlink-go@v0.2.0`; the package is
   `culperlink`. Earlier Go SDK code lived inside the CulperLink core
   repository at a different path and was never published; nothing carries
@@ -73,5 +74,20 @@ The Go SDK's first release from its own repository (CULPER-452).
   - `Options.Tunnel.DaemonSocket` must be a Unix socket owned by your user,
     checked before anything is sent to it (G-27); errors from the daemon path
     never carry a URL, an address or a port (G-26).
+- Audit fix batch 12 (CulperLink CULPER-467), before the first publish:
+  - the daemon's proxies require a token (audit B2-3): this library reads
+    `proxy_token` from the daemon's status and presents it as the proxy
+    password on every Data Plane request. A daemon that reports none is
+    refused (`ErrTunnelUnavailable`, "no proxy token"); a 407 — a restarted
+    daemon's new token — sent nothing and is answered by reading the token
+    again. Needs the daemon from the same release;
+  - the proxy's 502 now says whether the request reached the node
+    (`Culperlink-Proxy-Upstream`): `not-sent` is sent again, any method, on
+    a re-established tunnel, so an `Encrypt` that met a tunnel that had just
+    dropped succeeds instead of failing; `sent` is a sent request and a
+    `POST` is not sent again ("the tunnel failed after the request was
+    sent"). This replaces batch 11's "a request that met a dead tunnel is
+    no longer resent in the same call", which held only because the proxy
+    could not say.
 - Mode `TunnelOff` is the HTTPS-only client, for an installation with no
   Data Plane node and for Windows.
