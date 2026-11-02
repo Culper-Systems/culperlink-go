@@ -38,7 +38,7 @@
 // standard library and implements no primitive itself.
 //
 // The transport cryptography — the WireGuard tunnel to the Data Plane node,
-// keyed by the hybrid ML-KEM-768 + P-256 handshake — is the daemon's. The
+// keyed by the hybrid ML-KEM-768 + P-384 handshake — is the daemon's. The
 // daemon generates and holds the WireGuard key; this library never sees it,
 // nor the handshake or lease wire shapes. What this library holds is the
 // session's two opaque tokens and a handle on the daemon: its control socket
