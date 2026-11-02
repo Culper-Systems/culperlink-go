@@ -38,7 +38,7 @@
 // standard library and implements no primitive itself.
 //
 // The transport cryptography — the WireGuard tunnel to the Data Plane node,
-// keyed by the hybrid ML-KEM-768 + P-256 handshake — is the daemon's. The
+// keyed by the hybrid ML-KEM-768 + P-384 handshake — is the daemon's. The
 // daemon generates and holds the WireGuard key; this library never sees it,
 // nor the handshake or lease wire shapes. What this library holds is the
 // session's two opaque tokens and a handle on the daemon: its control socket
@@ -102,6 +102,14 @@
 // is checked against [DaemonVersionMin, DaemonVersionMax) before the token is
 // handed over; a daemon outside it is ErrTunnelDaemonIncompatible.
 //
+// The daemon's proxies require a token (CulperLink CULPER-467, audit B2-3):
+// loopback is open to every user on the host. The daemon reports it as
+// "proxy_token" in the status of a control reply, on the socket only this
+// user can reach, and this client presents it as the proxy password
+// (Proxy-Authorization: Basic) on every Data Plane request. It is never
+// logged and is not in the TunnelStatus this library returns. A daemon that
+// reports none predates the token and is refused.
+//
 // Then: select (POST /sdk/v1/gateways/select on the Control Plane, carrying
 // the sovereign pool and the CUI marking; the geofence the service applied
 // is re-applied here, geofence.go), hand the candidate list, the traffic
@@ -132,8 +140,11 @@
 //     a timeout, up to MaxRetries times.
 //  3. A POST that was sent is never sent again: attest appends a record,
 //     gateway selection writes a routing row, the token exchange mints a
-//     session, encrypt uses a nonce. Through the daemon, the proxy's "upstream
-//     unreachable" counts as sent.
+//     session, encrypt uses a nonce. Through the daemon, the proxy says in
+//     Culperlink-Proxy-Upstream whether the node saw the request: "not-sent"
+//     (and a 407, a stale proxy token) is rule 1 and is sent again on a
+//     re-established tunnel; "sent" is a sent request; a 502 without the
+//     header is the node's.
 //  4. The rate limiter's refusal — 429 RATE_LIMITED, or 503
 //     RATE_LIMIT_UNAVAILABLE — is waited out once per call when its
 //     Retry-After is at most ten seconds, and the request sent once more. A

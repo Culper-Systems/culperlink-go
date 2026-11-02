@@ -3,6 +3,7 @@ package culperlink
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -317,10 +318,10 @@ func TestPolicyIsHandedToTheDaemon(t *testing.T) {
 }
 
 // A request the tunnel could not carry asks the daemon; a tunnel it reports
-// down is dropped, and the next call re-selects and re-establishes it. The
-// call that met the dead tunnel is not sent again: the proxy's 502 cannot
-// say whether the node saw the encrypt, and a POST that may have been
-// received is never resent (retry.go, rule 3).
+// down is dropped and re-selected and re-established. Since CULPER-467 the
+// proxy's 502 says the encrypt never reached the node ("not-sent"), so the
+// same call is sent again on the new tunnel (retry.go, rule 1). Before, the
+// proxy could not say, and the call failed.
 func TestTunnelDownIsReestablished(t *testing.T) {
 	skipWithoutUnixSockets(t)
 	cp := newFakeCP(t)
@@ -330,20 +331,111 @@ func TestTunnelDownIsReestablished(t *testing.T) {
 	if _, err := c.Encrypt(ctx, []byte("one"), "ch"); err != nil {
 		t.Fatal(err)
 	}
-	// The tunnel drops: the proxy answers 502 and the daemon reports down.
+	// The tunnel drops: the proxy answers 502 not-sent and the daemon
+	// reports down.
 	d.set(func(d *fakeDaemon) { d.down, d.connected = true, false })
-	if _, err := c.Encrypt(ctx, []byte("two"), "ch"); !errors.Is(err, ErrTunnelUnavailable) {
-		t.Fatalf("Encrypt into the dropped tunnel: %v, want ErrTunnelUnavailable", err)
-	}
-	if n := cp.hit("/sdk/v1/gateways/select"); n != 1 {
-		t.Fatalf("selections = %d, want 1: the failed call is not sent again", n)
-	}
-	if _, err := c.Encrypt(ctx, []byte("three"), "ch"); err != nil {
-		t.Fatalf("Encrypt after the tunnel dropped: %v", err)
+	if _, err := c.Encrypt(ctx, []byte("two"), "ch"); err != nil {
+		t.Fatalf("Encrypt into the dropped tunnel was not carried on the new one: %v", err)
 	}
 	if n := cp.hit("/sdk/v1/gateways/select"); n != 2 {
 		t.Fatalf("selections = %d, want 2 (one re-selection)", n)
 	}
+	d.mu.Lock()
+	encrypts := d.encrypts
+	d.mu.Unlock()
+	if encrypts != 3 {
+		t.Fatalf("the proxy saw %d encrypts, want 3: one, the refused two, two again", encrypts)
+	}
+}
+
+// "sent": the request was written before the tunnel failed and the node may
+// have used the nonce. A POST is not sent again (rule 3).
+func TestProxySentFailureIsNotResent(t *testing.T) {
+	skipWithoutUnixSockets(t)
+	cp := newFakeCP(t)
+	d := newFakeDaemon(t, "0.2.0")
+	c := tunnelClient(t, cp, d)
+	ctx := context.Background()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	d.set(func(d *fakeDaemon) { d.sentFail = true })
+	_, err := c.Encrypt(ctx, []byte("x"), "ch")
+	if !errors.Is(err, ErrTunnelUnavailable) || !strings.Contains(err.Error(), "after the request was sent") {
+		t.Fatalf("Encrypt: %v, want ErrTunnelUnavailable naming a sent request", err)
+	}
+	d.mu.Lock()
+	encrypts := d.encrypts
+	d.mu.Unlock()
+	if encrypts != 1 {
+		t.Fatalf("the proxy saw %d encrypts, want 1", encrypts)
+	}
+}
+
+// The daemon's proxies want its token (CULPER-467, CulperLink audit B2-3):
+// every Data Plane request presents it, a daemon that reports none is
+// refused before anything crosses its proxy, and a 407 — a restarted
+// daemon's new token — sent nothing and is answered by reading the token
+// again.
+func TestProxyToken(t *testing.T) {
+	skipWithoutUnixSockets(t)
+	ctx := context.Background()
+
+	t.Run("presented", func(t *testing.T) {
+		cp := newFakeCP(t)
+		d := newFakeDaemon(t, "0.2.0")
+		c := tunnelClient(t, cp, d)
+		if _, err := c.Encrypt(ctx, []byte("x"), "ch"); err != nil {
+			t.Fatal(err)
+		}
+		d.mu.Lock()
+		refused := d.refused
+		d.mu.Unlock()
+		if refused != 0 {
+			t.Fatalf("the proxy refused %d requests", refused)
+		}
+		st := c.CurrentSession()
+		if strings.Contains(fmt.Sprintf("%+v", st), fakeProxyToken) {
+			t.Fatal("the proxy token is in the session the library returns")
+		}
+	})
+	t.Run("a daemon without one", func(t *testing.T) {
+		cp := newFakeCP(t)
+		d := newFakeDaemon(t, "0.2.0")
+		d.set(func(d *fakeDaemon) { d.proxyToken = "" })
+		c := tunnelClient(t, cp, d)
+		_, err := c.Encrypt(ctx, []byte("x"), "ch")
+		if !errors.Is(err, ErrTunnelUnavailable) || !strings.Contains(err.Error(), "no proxy token") {
+			t.Fatalf("Encrypt: %v, want ErrTunnelUnavailable naming the missing token", err)
+		}
+		d.mu.Lock()
+		encrypts, refused := d.encrypts, d.refused
+		d.mu.Unlock()
+		if encrypts != 0 || refused != 0 {
+			t.Fatalf("something crossed the proxy: %d encrypts, %d refused", encrypts, refused)
+		}
+		if ops := d.opList(); ops[len(ops)-1] != "disconnect" {
+			t.Fatalf("the tunnel was left up: %v", ops)
+		}
+	})
+	t.Run("a stale one is read again", func(t *testing.T) {
+		cp := newFakeCP(t)
+		d := newFakeDaemon(t, "0.2.0")
+		c := tunnelClient(t, cp, d)
+		if _, err := c.Encrypt(ctx, []byte("one"), "ch"); err != nil {
+			t.Fatal(err)
+		}
+		d.set(func(d *fakeDaemon) { d.proxyToken = strings.Repeat("a1", 32) })
+		if _, err := c.Encrypt(ctx, []byte("two"), "ch"); err != nil {
+			t.Fatalf("Encrypt after the token changed: %v", err)
+		}
+		d.mu.Lock()
+		refused, encrypts := d.refused, d.encrypts
+		d.mu.Unlock()
+		if refused != 1 || encrypts != 2 {
+			t.Fatalf("refused %d, encrypts %d; want 1 and 2", refused, encrypts)
+		}
+	})
 }
 
 func TestTunnelThatStaysDownIsTunnelUnavailable(t *testing.T) {

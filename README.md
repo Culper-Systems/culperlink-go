@@ -12,7 +12,7 @@ the certificate chain against the trust you configure (`TLSConfig`) and, when
 you set pins, an SPKI pin matched against the verified chain. It uses the Go
 standard library's `crypto/tls`, `crypto/x509` and `crypto/sha256` for that and
 implements no primitive itself. The tunnel's cryptography (the WireGuard
-tunnel and its hybrid ML-KEM-768 + P-256 handshake) is the daemon's.
+tunnel and its hybrid ML-KEM-768 + P-384 handshake) is the daemon's.
 
 The library talks HTTPS to your installation's Control Plane for the session
 and for attestation, and drives the `culperlink-tunnel` daemon — the compiled

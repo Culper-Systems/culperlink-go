@@ -59,10 +59,19 @@ const (
 // daemonPathOption is the option that names the daemon; quoted in errors.
 const daemonPathOption = "Options.Tunnel.DaemonPath"
 
-// proxyUnreachable is the daemon proxy's own reply body when the tunnel
-// cannot carry a request (a 502). Recognised so a tunnel that went down
-// between calls is re-established rather than reported as the node's 502.
-const proxyUnreachable = "upstream unreachable through the tunnel"
+// The daemon proxy's own 502 says whether the request reached the node
+// (CULPER-467): Culperlink-Proxy-Upstream is "not-sent" when the dial into
+// the tunnel failed, "sent" when the request's headers had been written. A
+// 502 without the header is the node's own.
+const (
+	proxyUpstreamHeader = "Culperlink-Proxy-Upstream"
+	proxyNotSent        = "not-sent"
+	proxySent           = "sent"
+)
+
+// proxyUser is the user name presented with the daemon's proxy token; the
+// daemon reads only the password.
+const proxyUser = "culperlink"
 
 // TunnelMode selects how Data Plane calls reach the node.
 type TunnelMode string
@@ -242,6 +251,10 @@ type daemonStatus struct {
 	LastError      string   `json:"last_error"`
 	SocksAddr      string   `json:"socks_addr"`
 	HTTPAddr       string   `json:"http_addr"`
+	// ProxyToken is the credential the daemon's proxies require (CULPER-467,
+	// CulperLink audit B2-3), presented as the proxy password. Never logged
+	// and never in the TunnelStatus this library returns.
+	ProxyToken string `json:"proxy_token"`
 }
 
 // daemonCandidate is a candidate in the daemon's request shape: the four
@@ -709,12 +722,20 @@ func (ts *tunnelState) establish(ctx context.Context, c *Client) (*target, error
 		_, _ = d.call(ctx, map[string]string{"op": "disconnect"}, 5*time.Second)
 		return nil, tunnelUnavailable("the daemon's proxy is not on a loopback address")
 	}
+	if !validProxyToken(st.ProxyToken) {
+		// CULPER-467: a daemon that reports no proxy token predates it, and
+		// its proxies answer anyone on the host.
+		_, _ = d.call(ctx, map[string]string{"op": "disconnect"}, 5*time.Second)
+		return nil, tunnelUnavailable("the daemon reported no proxy token (it predates CULPER-467); run the daemon from this release")
+	}
 	base, err := dataBaseURL(gw, st.NodeTunnelIP)
 	if err != nil {
 		_, _ = d.call(ctx, map[string]string{"op": "disconnect"}, 5*time.Second)
 		return nil, err
 	}
-	proxyURL := &url.URL{Scheme: "http", Host: st.HTTPAddr}
+	// The token rides as the proxy password: net/http sends it as
+	// Proxy-Authorization: Basic on every request to the proxy.
+	proxyURL := &url.URL{Scheme: "http", Host: st.HTTPAddr, User: url.UserPassword(proxyUser, st.ProxyToken)}
 	tr := &http.Transport{
 		// A fixed proxy, never the environment's: whether a payload rides
 		// the tunnel is not HTTP_PROXY's or NO_PROXY's decision.
@@ -759,17 +780,49 @@ func (ts *tunnelState) dropTransport() {
 	}
 }
 
-// isProxyFailure is true when the daemon's proxy, not the node, answered: the
-// tunnel could not carry the request. The body is restored for the caller
-// when it is not.
-func isProxyFailure(resp *http.Response) bool {
-	if resp.StatusCode != http.StatusBadGateway {
+// validProxyToken is the daemon's own rule for a token: 32 to 255 visible
+// ASCII characters.
+func validProxyToken(tok string) bool {
+	if len(tok) < 32 || len(tok) > 255 {
 		return false
 	}
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	_ = resp.Body.Close()
-	resp.Body = io.NopCloser(bytes.NewReader(b))
-	return bytes.Contains(b, []byte(proxyUnreachable))
+	for i := 0; i < len(tok); i++ {
+		if tok[i] < 0x21 || tok[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+// proxyAnswer is what a response says about the daemon's proxy.
+type proxyAnswer int
+
+const (
+	// fromNode: the node answered, or something the library cannot tell
+	// from the node; a sent request.
+	fromNode proxyAnswer = iota
+	// proxyRefusedNotSent: the proxy answered and nothing reached the node —
+	// a 502 marked not-sent, or a 407 (a stale proxy token).
+	proxyRefusedNotSent
+	// proxyFailedAfterSend: the proxy answered that the tunnel failed after
+	// the request was written; the node may have acted on it.
+	proxyFailedAfterSend
+)
+
+// readProxyAnswer classifies resp. It reads headers only; the body is
+// untouched.
+func readProxyAnswer(resp *http.Response) proxyAnswer {
+	switch {
+	case resp.StatusCode == http.StatusProxyAuthRequired:
+		return proxyRefusedNotSent
+	case resp.StatusCode != http.StatusBadGateway:
+		return fromNode
+	case resp.Header.Get(proxyUpstreamHeader) == proxyNotSent:
+		return proxyRefusedNotSent
+	case resp.Header.Get(proxyUpstreamHeader) == proxySent:
+		return proxyFailedAfterSend
+	}
+	return fromNode
 }
 
 // noteFailure follows a request the tunnel did not carry: it asks the

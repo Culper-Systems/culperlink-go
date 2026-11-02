@@ -219,7 +219,8 @@ type target struct {
 	base   string
 	client *http.Client
 	// tunnelled is true when the attempt goes through the daemon's proxy, so
-	// a failure is reported to the daemon and a proxy 502 is recognised.
+	// a failure is reported to the daemon and the proxy's own answers are
+	// recognised.
 	tunnelled bool
 }
 
@@ -255,11 +256,29 @@ func (c *Client) send(ctx context.Context, p plane, method, path string, body []
 			return nil, stopError{err}
 		}
 		resp, err := tgt.client.Do(track(req))
-		if tgt.tunnelled && (err != nil || isProxyFailure(resp)) {
-			// The proxy, not the node, answered, or nothing did: ask the
-			// daemon, and drop a tunnel it has given up on so the next
-			// attempt or call re-establishes it.
-			proxyFailed = err == nil
+		if !tgt.tunnelled {
+			return resp, err
+		}
+		if err != nil {
+			c.tunnel.noteFailure(ctx)
+			return resp, err
+		}
+		switch readProxyAnswer(resp) {
+		case proxyRefusedNotSent:
+			// The proxy dialled nothing (CULPER-467): rule 1, whatever the
+			// method. A 407 means the daemon's token changed under us; the
+			// transport is dropped so the next attempt reads it again.
+			if resp.StatusCode == http.StatusProxyAuthRequired {
+				c.tunnel.dropTransport()
+			}
+			drainAndClose(resp)
+			c.tunnel.noteFailure(ctx)
+			return nil, notSentError{tunnelUnavailable("the tunnel could not carry the request")}
+		case proxyFailedAfterSend:
+			// Written, then lost: a sent request (rule 3 for a POST). Ask the
+			// daemon, and drop a tunnel it has given up on so the next call
+			// re-establishes it.
+			proxyFailed = true
 			c.tunnel.noteFailure(ctx)
 		}
 		return resp, err
@@ -284,7 +303,7 @@ func (c *Client) send(ctx context.Context, p plane, method, path string, body []
 	}
 	defer drainAndClose(resp)
 	if proxyFailed {
-		return tunnelUnavailable("the tunnel could not carry the request")
+		return tunnelUnavailable("the tunnel failed after the request was sent; it was not sent again")
 	}
 	return decodeResponse(resp, out)
 }
