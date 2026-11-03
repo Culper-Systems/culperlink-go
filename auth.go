@@ -11,10 +11,14 @@ import (
 
 // BeginPasskeyAuth starts a WebAuthn authentication ceremony for an end user.
 //
-// NOT SERVED IN THE BETA: the installation does not register
-// /sdk/v1/auth/begin or /sdk/v1/auth/finish, so this returns an *APIError
-// with status 404. The wire shapes are kept for when the routes return.
-// Authenticate with an API key instead.
+// NOT YET SERVED: the installation does not register /sdk/v1/auth/begin or
+// /sdk/v1/auth/finish, so this returns an *APIError with status 404. The
+// server's passkey ceremonies (CULPER-468) are on the Management surface; the
+// SDK-surface sign-in that returns the control and data token pair to a
+// person's device is CULPER-469 (patent claims 2 and 5), which rebuilds this
+// method as a discoverable login keyed by ceremony id. Until then,
+// authenticate with an API key, the machine-to-machine path. The method is
+// kept for the patent's client flow; its wire shape will change.
 func (c *Client) BeginPasskeyAuth(ctx context.Context, username string) (*AuthChallenge, error) {
 	if username == "" {
 		return nil, errors.New("culperlink: username required")
@@ -40,7 +44,7 @@ func (c *Client) BeginPasskeyAuth(ctx context.Context, username string) (*AuthCh
 }
 
 // FinishPasskeyAuth completes the ceremony BeginPasskeyAuth started. NOT
-// SERVED IN THE BETA; see BeginPasskeyAuth.
+// YET SERVED (CULPER-469); see BeginPasskeyAuth.
 func (c *Client) FinishPasskeyAuth(ctx context.Context, username string, assertion *PasskeyAssertion) (*Session, error) {
 	if username == "" {
 		return nil, errors.New("culperlink: username required")
