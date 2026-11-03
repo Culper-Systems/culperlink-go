@@ -5,6 +5,10 @@ release this library is published with; the tag is `v<version>`.
 
 ## 0.2.0 — unreleased
 
+### Added
+
+- `APIError.Reason`: the server's refusal class on `INVALID_PASSKEY` (CULPER-468), declared so the error envelope decodes field for field; empty on every other code.
+
 The Go SDK's first release from its own repository (CULPER-452).
 
 - The library is a client of the `culperlink-tunnel` daemon from the
