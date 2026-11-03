@@ -323,6 +323,7 @@ type fakeDaemon struct {
 	refused     int    // requests the proxy refused 407
 	connectErr  string // non-empty: connect fails with it
 	renewErr    string
+	conflicts   int           // encrypts the node answers 409 CONFLICT (the tunnel changed tenant) before serving
 	hold        time.Duration // when set, the node answers encrypt this late
 	encrypts    int           // encrypts the node received
 	httpAddr    string        // reported http_addr; defaults to the proxy's
@@ -363,10 +364,21 @@ func (d *fakeDaemon) startProxy() {
 			return
 		}
 		down, connected, hold, sentFail := d.down, d.connected, d.hold, d.sentFail
+		conflict := false
 		if r.URL.Path == "/sdk/v1/encrypt" {
 			d.encrypts++
+			if d.conflicts > 0 && d.connected && !d.down {
+				d.conflicts--
+				conflict = true
+			}
 		}
 		d.mu.Unlock()
+		if conflict {
+			// internal/sdkapi's leaseLineageConflict: the lease was torn
+			// down and nothing was served (CULPER-467, decision 38).
+			apiErr(w, http.StatusConflict, "CONFLICT", "lease was opened under a different key lineage; tunnel torn down")
+			return
+		}
 		if hold > 0 && r.URL.Path == "/sdk/v1/encrypt" {
 			select {
 			case <-time.After(hold):

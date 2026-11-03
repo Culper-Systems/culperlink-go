@@ -35,9 +35,12 @@ type Client struct {
 	closed bool
 }
 
-// Options configures a Client. APIKey and Endpoint are required.
+// Options configures a Client. Endpoint is required.
 type Options struct {
-	// APIKey is the API key your installation issued. Required.
+	// APIKey is the API key your installation issued: the machine-to-machine
+	// way in, for a program with no person present. Leave it empty when the
+	// application signs a person in with a passkey (BeginPasskeyLogin); a
+	// call made before either way in returns ErrMissingAPIKey, naming both.
 	APIKey string
 
 	// Endpoint is the base URL of your CulperLink installation's Control
@@ -78,9 +81,8 @@ type Options struct {
 // NewClient validates opts and applies defaults. It performs no network I/O
 // and starts no daemon; the first operation, or Connect, does.
 func NewClient(opts Options) (*Client, error) {
-	if opts.APIKey == "" {
-		return nil, ErrMissingAPIKey
-	}
+	// No API key is allowed: an application that signs a person in with a
+	// passkey has none (CULPER-469).
 	if opts.Endpoint == "" {
 		return nil, ErrMissingEndpoint
 	}
@@ -235,8 +237,32 @@ func (c *Client) send(ctx context.Context, p plane, method, path string, body []
 	}
 
 	tunnelled := p == dataPlane && c.tunnel != nil
+	for reconnected := false; ; reconnected = true {
+		resp, again, err := c.sendOnce(ctx, p, tunnelled, method, path, body)
+		if again && !reconnected {
+			// The node's "this tunnel changed tenant" (CULPER-467, decision
+			// 38): the data_token now resolves to another key lineage than
+			// the lease the tunnel rides, and the node tore the lease down
+			// before any handler ran. Nothing was served, so the call is sent
+			// once more over a tunnel selected and connected afresh with the
+			// current data_token (CULPER-469). A second 409 is the caller's.
+			drainAndClose(resp)
+			c.tunnel.reset(ctx)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		defer drainAndClose(resp)
+		return decodeResponse(resp, out)
+	}
+}
+
+// sendOnce is one call under the retry policy. again is true when the node
+// answered 409 through the tunnel: resp is that answer, unread.
+func (c *Client) sendOnce(ctx context.Context, p plane, tunnelled bool, method, path string, body []byte) (resp *http.Response, again bool, err error) {
 	proxyFailed := false
-	resp, err := c.roundTrip(ctx, method, func(actx context.Context, track func(*http.Request) *http.Request) (*http.Response, error) {
+	resp, err = c.roundTrip(ctx, method, func(actx context.Context, track func(*http.Request) *http.Request) (*http.Response, error) {
 		proxyFailed = false
 		tgt := target{base: c.opts.Endpoint, client: c.httpClient}
 		if tunnelled {
@@ -286,26 +312,26 @@ func (c *Client) send(ctx context.Context, p plane, method, path string, body []
 	if err != nil {
 		var tErr *tunnelError
 		if errors.As(err, &tErr) || errors.Is(err, ErrSovereignNodeUnavailable) || errors.Is(err, ErrSelectionNotConfigured) {
-			return err
+			return nil, false, err
 		}
 		if tunnelled && isTimeout(err) {
 			// A sent request that timed out is a timeout, not a tunnel
 			// failure: the node may have acted on it (retry.go, rule 3).
 			// The text names no address; the cause keeps Timeout().
-			return &timeoutError{cause: err}
+			return nil, false, &timeoutError{cause: err}
 		}
 		if tunnelled {
 			// The transport's text names the node's tunnel address and the
 			// proxy's port; the caller gets the class (G-26).
-			return &tunnelError{msg: "culperlink: tunnel unavailable: the tunnel could not carry the request (" + transportClass(err) + ")", cause: err}
+			return nil, false, &tunnelError{msg: "culperlink: tunnel unavailable: the tunnel could not carry the request (" + transportClass(err) + ")", cause: err}
 		}
-		return fmt.Errorf("culperlink: request failed: %w", err)
+		return nil, false, fmt.Errorf("culperlink: request failed: %w", err)
 	}
-	defer drainAndClose(resp)
 	if proxyFailed {
-		return tunnelUnavailable("the tunnel failed after the request was sent; it was not sent again")
+		drainAndClose(resp)
+		return nil, false, tunnelUnavailable("the tunnel failed after the request was sent; it was not sent again")
 	}
-	return decodeResponse(resp, out)
+	return resp, tunnelled && resp.StatusCode == http.StatusConflict, nil
 }
 
 // setCredential attaches the plane's credential, and only that one.

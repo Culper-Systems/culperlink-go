@@ -771,3 +771,71 @@ func TestPolicyIPv6ReachesTheDaemon(t *testing.T) {
 		})
 	}
 }
+
+// A payload request the node answers 409 — the tunnel changed tenant
+// (CULPER-467, decision 38) — was refused before any handler ran. The client
+// tears its tunnel down, connects afresh with the current data_token and
+// sends the call once more (CULPER-469). A second 409 is the caller's.
+func TestATenantConflictReconnectsOnceAndSendsAgain(t *testing.T) {
+	skipWithoutUnixSockets(t)
+	cp := newFakeCP(t)
+	d := newFakeDaemon(t, "0.2.0")
+	c := tunnelClient(t, cp, d)
+	ctx := context.Background()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	d.set(func(d *fakeDaemon) { d.conflicts = 1 })
+	if _, err := c.Encrypt(ctx, []byte("p"), "ch"); err != nil {
+		t.Fatalf("Encrypt after a tenant conflict: %v", err)
+	}
+	d.mu.Lock()
+	encrypts := d.encrypts
+	d.mu.Unlock()
+	if encrypts != 2 {
+		t.Fatalf("the node saw %d encrypts, want 2", encrypts)
+	}
+	if n := cp.hit("/sdk/v1/gateways/select"); n != 2 {
+		t.Fatalf("selections = %d, want 2", n)
+	}
+	var connects, disconnectBeforeLast int
+	list := d.opList()
+	last := -1
+	for i, op := range list {
+		if op == "connect" {
+			connects++
+			last = i
+		}
+	}
+	for i, op := range list {
+		if op == "disconnect" && i < last {
+			disconnectBeforeLast++
+		}
+	}
+	if connects != 2 || disconnectBeforeLast == 0 {
+		t.Fatalf("ops = %v: want a disconnect before the second connect", list)
+	}
+}
+
+func TestASecondTenantConflictIsTheCallers(t *testing.T) {
+	skipWithoutUnixSockets(t)
+	cp := newFakeCP(t)
+	d := newFakeDaemon(t, "0.2.0")
+	c := tunnelClient(t, cp, d)
+	ctx := context.Background()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	d.set(func(d *fakeDaemon) { d.conflicts = 5 })
+	_, err := c.Encrypt(ctx, []byte("p"), "ch")
+	var api *APIError
+	if !errors.As(err, &api) || api.StatusCode != http.StatusConflict || api.Code != "CONFLICT" {
+		t.Fatalf("err = %v, want the node's 409", err)
+	}
+	d.mu.Lock()
+	encrypts := d.encrypts
+	d.mu.Unlock()
+	if encrypts != 2 {
+		t.Fatalf("the node saw %d encrypts, want 2: once, not a loop", encrypts)
+	}
+}
