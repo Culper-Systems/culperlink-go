@@ -9,7 +9,9 @@ import (
 
 // Sentinel errors. Check for them with errors.Is.
 var (
-	// ErrMissingAPIKey is returned by NewClient when Options.APIKey is empty.
+	// ErrMissingAPIKey is returned by a call that needs a session when the
+	// client has none to use: Options.APIKey is empty and no passkey sign-in
+	// has happened (CULPER-469). The message names both ways in.
 	ErrMissingAPIKey = errors.New("culperlink: API key required")
 
 	// ErrMissingEndpoint is returned by NewClient when Options.Endpoint is
@@ -97,9 +99,14 @@ var (
 	// expiry. The APIError's Message is the service's instruction.
 	ErrLicenceExpired = errors.New("culperlink: the installation's licence has expired")
 
-	// ErrPasskeyDeclined is returned when the user cancels or declines a
-	// WebAuthn ceremony on their authenticator.
-	ErrPasskeyDeclined = errors.New("culperlink: passkey ceremony declined")
+	// ErrPasskeyDeclined matches the server's refusal of a passkey:
+	// INVALID_PASSKEY (HTTP 401) from FinishPasskeyLogin or
+	// FinishPasskeyRegistration. APIError.Reason carries the class when the
+	// server gives one; a bare refusal is also the answer for an unknown
+	// credential and a suspended account. A person cancelling in the
+	// platform authenticator is the platform's error, before this library is
+	// called.
+	ErrPasskeyDeclined = errors.New("culperlink: passkey refused")
 
 	// ErrSovereignNodeUnavailable is returned when no compliant node can be
 	// tunnelled to: gateway selection answered GATEWAY_UNAVAILABLE, or every
@@ -169,10 +176,12 @@ type APIError struct {
 	Message    string `json:"message"`
 	TraceID    string `json:"trace_id,omitempty"`
 	RetryAfter int    `json:"retry_after,omitempty"`
-	// Reason is the server's refusal class on INVALID_PASSKEY (CULPER-468):
-	// one of attestation_unverified, aaguid_not_allowed,
-	// user_verification_missing, sign_count_replay, challenge_expired. Empty
-	// on every other code. It names a class, never the matched material.
+	// Reason is the server's refusal class on INVALID_PASSKEY (CULPER-468,
+	// CULPER-469): one of attestation_unverified, aaguid_not_allowed,
+	// user_verification_missing, sign_count_replay, challenge_expired (an
+	// unknown or expired ceremony too), no_organization, credential_retired.
+	// Empty on every other code, and on a bare refusal. It names a class,
+	// never the matched material.
 	Reason string `json:"reason,omitempty"`
 }
 

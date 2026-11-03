@@ -124,6 +124,57 @@ version the daemon reports against the range it was written for
 This library does not change when the tunnel's handshake does; the daemon
 does. Upgrade the daemon and this library to the same CulperLink release.
 
+## Signing in with a passkey
+
+An API key is the way in for a program with no person present. A person
+signs in with a passkey: the Control Plane issues a FIDO2 challenge, the
+person's device signs it in its secure element with the person present, and
+the client receives the same control-and-data token pair an API key gets.
+From then on it renews, encrypts, tunnels and attests exactly as it does
+with an API key.
+
+The library carries the ceremony; your application runs it. It has no
+authenticator: pass `PublicKey` to your platform's (a browser's
+`navigator.credentials.get`, `ASAuthorization` on Apple platforms, Windows
+Hello) and hand back what it returns.
+
+```go
+client, err := culperlink.NewClient(culperlink.Options{
+	Endpoint: "https://culperlink.internal.example", // no APIKey
+})
+if err != nil {
+	log.Fatal(err)
+}
+challenge, err := client.BeginPasskeyLogin(ctx)
+if err != nil {
+	log.Fatal(err)
+}
+cred := runPlatformAuthenticator(challenge.PublicKey) // your code: the PublicKeyCredential JSON
+_, err = client.FinishPasskeyLogin(ctx, challenge.CeremonyID, &culperlink.PasskeyAssertion{
+	ID:                cred.ID,
+	RawID:             cred.RawID,
+	Type:              cred.Type,
+	ClientDataJSON:    cred.Response.ClientDataJSON,
+	AuthenticatorData: cred.Response.AuthenticatorData,
+	Signature:         cred.Response.Signature,
+	UserHandle:        cred.Response.UserHandle,
+})
+var apiErr *culperlink.APIError
+if errors.Is(err, culperlink.ErrPasskeyDeclined) && errors.As(err, &apiErr) {
+	log.Printf("refused: %s", apiErr.Reason) // e.g. "sign_count_replay", or ""
+}
+```
+
+- A call made before either way in returns `ErrMissingAPIKey`, naming both.
+- A passkey session is renewed with its own session token and is never
+  swapped for an API-key session. When it can no longer be renewed (it was
+  revoked, or reached its 12-hour cap) the call returns `ErrInvalidSession`:
+  sign the person in again.
+- `BeginPasskeyRegistration` and `FinishPasskeyRegistration` enrol another
+  passkey for the person a passkey session names. Under an API-key session
+  the installation refuses them (`FORBIDDEN`, 403). A person's first passkey
+  is enrolled by the installation's operator on the Management API.
+
 ## Errors
 
 Check with `errors.Is`; `errors.As(err, &apiErr)` with `*culperlink.APIError`
@@ -139,6 +190,8 @@ gives the service's code and HTTP status.
 | `ErrDecryptionFailed` | `DECRYPTION_FAILED` (422) | the payload did not authenticate (tampered, a different channel, or a changed marking) |
 | `ErrKeyEpochRetired` | `KEY_EPOCH_RETIRED` (410) | the payload's key epoch is retired; payloads decrypt for at most 13 hours |
 | `ErrInvalidSession` | `UNAUTHORIZED` (401) | the key or the session was refused. The library does not sign in again on its own |
+| `ErrMissingAPIKey` | none | no `APIKey` and no passkey sign-in yet |
+| `ErrPasskeyDeclined` | `INVALID_PASSKEY` (401) | the installation refused the passkey; `APIError.Reason` gives the class when there is one |
 | `ErrAPIKeyExpired` | `API_KEY_EXPIRED` (403) | the key is past its expiry: renew it; retrying will not help |
 | `ErrLicenceExpired` | `LICENCE_EXPIRED` (403) | your installation's licence has lapsed: the key may be fine, and the installation's operator renews the licence |
 | `ErrRateLimited` | `RATE_LIMITED` (429) | you are over your rate limit. `APIError.RetryAfter` says how long to wait |

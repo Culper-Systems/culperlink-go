@@ -19,9 +19,14 @@ import (
 type sessionState struct {
 	mu sync.RWMutex
 
-	appToken     string // session_token: Control Plane calls
-	dataToken    string // data_token: Data Plane calls
-	endUserToken string // from a passkey ceremony; supersedes appToken on the Control Plane
+	appToken  string // session_token: Control Plane calls
+	dataToken string // data_token: Data Plane calls
+
+	// byPasskey is set when the pair came from a passkey sign-in
+	// (CULPER-469). Such a session is renewed and never replaced by an
+	// API-key exchange, and stays set after the session ends so a later call
+	// fails rather than signing in as the organisation; see auth.go.
+	byPasskey bool
 
 	current         *Session
 	sovereignPoolID string
@@ -63,7 +68,9 @@ func (s *sessionState) fresh() bool {
 
 // ensureAuthenticated guarantees a usable pair, renewing near expiry (which
 // presents session_token, never the API key) and falling back to the API-key
-// exchange when renewal fails for any reason.
+// exchange when renewal fails for any reason — except for a passkey-issued
+// session, which is a person's and is never replaced by the organisation's
+// API key (auth.go).
 func (s *sessionState) ensureAuthenticated(ctx context.Context, c *Client) error {
 	if s.fresh() {
 		return nil
@@ -73,17 +80,77 @@ func (s *sessionState) ensureAuthenticated(ctx context.Context, c *Client) error
 	if s.fresh() {
 		return nil
 	}
+	byPasskey := s.passkey()
 	// A capped session cannot be extended: renewing again would only return
 	// the same expiry, so go straight to the API key.
 	if s.canRenew() && !s.capped() {
-		if err := s.renew(ctx, c); err == nil {
+		err := s.renew(ctx, c)
+		if err == nil {
 			return c.afterTokenRotation(ctx)
 		}
+		if byPasskey {
+			var api *APIError
+			if !errors.As(err, &api) && !errors.Is(err, ErrInvalidSession) {
+				// A transport failure says nothing about the session: keep
+				// it, and let the caller see what happened.
+				return err
+			}
+			// No API-key fallback for a person's session, and no loop: the
+			// session is over, and the person signs in again.
+			s.dropPair()
+			return fmt.Errorf("%w: the passkey session could not be renewed; sign in again with a passkey: %w", ErrInvalidSession, err)
+		}
+	}
+	if byPasskey {
+		// At the lifetime cap, or already ended: a passkey session cannot be
+		// re-issued without the person.
+		s.dropPair()
+		return fmt.Errorf("%w: the passkey session has ended; sign in again with a passkey", ErrInvalidSession)
+	}
+	if c.opts.APIKey == "" {
+		return errNotSignedIn
 	}
 	if err := s.authenticate(ctx, c); err != nil {
 		return err
 	}
 	return c.afterTokenRotation(ctx)
+}
+
+// errNotSignedIn is a call made with no API key and before any passkey
+// sign-in. It matches ErrMissingAPIKey and names both ways in.
+var errNotSignedIn = fmt.Errorf("%w: not signed in: set Options.APIKey, or sign in with a passkey (BeginPasskeyLogin, then FinishPasskeyLogin)", ErrMissingAPIKey)
+
+// signInWithPasskey posts a finish-login body and installs the pair it
+// returns, serialised with renewal and the API-key exchange so a sign-in
+// never interleaves with another token install.
+func (s *sessionState) signInWithPasskey(ctx context.Context, c *Client, body []byte) error {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	if err := s.exchange(ctx, c, "/sdk/v1/auth/passkey/finish-login", body, ""); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.byPasskey = true
+	s.renewalCapped = false
+	s.mu.Unlock()
+	return c.afterTokenRotation(ctx)
+}
+
+func (s *sessionState) passkey() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.byPasskey
+}
+
+// dropPair forgets an ended passkey session's pair; byPasskey stays set, so
+// the client remains the person's until the next sign-in. RotateSession is
+// the explicit way back to the API key.
+func (s *sessionState) dropPair() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.appToken, s.dataToken = "", ""
+	s.current = nil
+	s.renewalCapped = false
 }
 
 // afterTokenRotation renews the tunnel's lease with the new data_token in the
@@ -120,6 +187,7 @@ func (s *sessionState) authenticate(ctx context.Context, c *Client) error {
 	}
 	s.mu.Lock()
 	s.renewalCapped = false
+	s.byPasskey = false
 	s.mu.Unlock()
 	return nil
 }
@@ -207,9 +275,6 @@ func (s *sessionState) exchange(ctx context.Context, c *Client, path string, bod
 func (s *sessionState) token() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.endUserToken != "" {
-		return s.endUserToken
-	}
 	return s.appToken
 }
 
@@ -219,12 +284,6 @@ func (s *sessionState) dataTokenValue() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.dataToken
-}
-
-func (s *sessionState) setEndUserToken(t string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.endUserToken = t
 }
 
 func (s *sessionState) setSovereignPool(id string) {
@@ -253,13 +312,16 @@ func (s *sessionState) snapshot() *Session {
 func (s *sessionState) clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.appToken, s.dataToken, s.endUserToken = "", "", ""
+	s.appToken, s.dataToken = "", ""
 	s.current = nil
 	s.renewalCapped = false
+	s.byPasskey = false
 }
 
 // RotateSession forces re-authentication with the API key. Most callers never
-// need it: the client renews automatically near expiry.
+// need it: the client renews automatically near expiry. A client with no API
+// key that signed in with a passkey has nothing to re-present: this returns
+// ErrMissingAPIKey, and the person signs in again.
 func (c *Client) RotateSession(ctx context.Context) error {
 	if c.IsClosed() {
 		return ErrClientClosed
@@ -289,8 +351,9 @@ type apiKeyAuthRequest struct {
 	APIKey string `json:"api_key"`
 }
 
-// tokenPairResponse is the body of POST /sdk/v1/auth/api-key and POST
-// /sdk/v1/auth/renew.
+// tokenPairResponse is the body of POST /sdk/v1/auth/api-key, POST
+// /sdk/v1/auth/renew and POST /sdk/v1/auth/passkey/finish-login (CULPER-469:
+// a passkey sign-in ends in the same pair).
 type tokenPairResponse struct {
 	Session      Session   `json:"session"`
 	SessionToken string    `json:"session_token"`

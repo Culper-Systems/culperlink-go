@@ -929,6 +929,21 @@ func parseTime(s string) time.Time {
 	return t
 }
 
+// reset tears the tunnel down so the next call selects and connects again:
+// the daemon is told to disconnect (the node has already torn the lease
+// down) and the proxy transport is forgotten. The daemon itself stays.
+func (ts *tunnelState) reset(ctx context.Context) {
+	ts.connectMu.Lock() // wait out an establishment in flight
+	defer ts.connectMu.Unlock()
+	ts.dropTransport()
+	ts.mu.Lock()
+	d := ts.daemon
+	ts.mu.Unlock()
+	if d != nil && d.alive() {
+		_, _ = d.call(ctx, map[string]string{"op": "disconnect"}, 5*time.Second)
+	}
+}
+
 // close disconnects the tunnel and stops a daemon this client started. A
 // daemon named by DaemonSocket stays running.
 func (ts *tunnelState) close() error {

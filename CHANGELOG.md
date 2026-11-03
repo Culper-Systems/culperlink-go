@@ -5,9 +5,29 @@ release this library is published with; the tag is `v<version>`.
 
 ## 0.2.0 — unreleased
 
+### Breaking
+
+- The passkey methods are rebuilt for the passkey sign-in the installation
+  now serves on the SDK surface (CULPER-469): `BeginPasskeyAuth` and
+  `FinishPasskeyAuth` are removed, with `AuthChallenge` and the byte-typed
+  `PasskeyAssertion`. Their replacements are `BeginPasskeyLogin` /
+  `FinishPasskeyLogin` (the ceremony id and the WebAuthn
+  `PublicKeyCredential` JSON, base64url strings as the platform returns them)
+  and `BeginPasskeyRegistration` / `FinishPasskeyRegistration`.
+- `NewClient` no longer refuses an empty `APIKey`: a call made before either
+  way in returns `ErrMissingAPIKey`, whose message names both.
+
 ### Added
 
-- `APIError.Reason`: the server's refusal class on `INVALID_PASSKEY` (CULPER-468), declared so the error envelope decodes field for field; empty on every other code.
+- Passkey sign-in (CULPER-469; the patent's claims 2 and 5): a person's
+  device signs a FIDO2 challenge with the person present, and
+  `FinishPasskeyLogin` installs the same control-and-data token pair the API
+  key gets. A passkey session is renewed with its session token and never
+  replaced by an API-key session. The library carries the ceremony; the
+  application's platform authenticator runs it.
+- A payload request the node answers 409 (the tunnel changed tenant,
+  CULPER-467) tears the tunnel down, connects afresh and is sent once more.
+- `APIError.Reason`: the server's refusal class on `INVALID_PASSKEY` (CULPER-468; `no_organization` and `credential_retired` added by CULPER-469), declared so the error envelope decodes field for field; empty on every other code.
 
 The Go SDK's first release from its own repository (CULPER-452).
 
