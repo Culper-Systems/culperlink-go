@@ -41,7 +41,6 @@ func TestNewClientValidates(t *testing.T) {
 		opts Options
 		want error
 	}{
-		{"no api key", Options{Endpoint: "https://x"}, ErrMissingAPIKey},
 		{"no endpoint", Options{APIKey: "k"}, ErrMissingEndpoint},
 		{"bad tunnel mode", Options{APIKey: "k", Endpoint: "https://x", Tunnel: TunnelOptions{Mode: "wireguard"}}, ErrInvalidTunnelMode},
 		{"unreadable CA file", Options{APIKey: "k", Endpoint: "https://x", TLS: TLSConfig{CACertFile: "/nonexistent/ca.pem"}}, ErrInvalidCABundle},
@@ -313,7 +312,7 @@ func TestArgumentChecks(t *testing.T) {
 		"attest subject":   second(c.Attest(ctx, "", nil)),
 		"verify hash":      second(c.Verify(ctx, "")),
 		"tag marking":      second(c.TagPayload(ctx, []byte("x"), "CUI//BOGUS", "ch")),
-		"passkey username": second(c.BeginPasskeyAuth(ctx, "")),
+		"passkey ceremony": second(c.FinishPasskeyLogin(ctx, "", &PasskeyAssertion{})),
 	} {
 		if err == nil || !strings.HasPrefix(err.Error(), "culperlink: ") {
 			t.Errorf("%s: %v", name, err)

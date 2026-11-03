@@ -1,6 +1,9 @@
 package culperlink
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Session is an authenticated session, returned for inspection. Neither token
 // is exposed.
@@ -128,20 +131,43 @@ type TunnelDNSPolicy struct {
 	Resolvers []string `json:"resolvers,omitempty"`
 }
 
-// AuthChallenge is the WebAuthn challenge returned by BeginPasskeyAuth.
-type AuthChallenge struct {
-	Challenge        []byte   `json:"challenge"`
-	RelyingPartyID   string   `json:"rp_id"`
-	AllowCredentials []string `json:"allow_credentials,omitempty"`
-	Timeout          int      `json:"timeout"` // milliseconds
+// PasskeyLoginChallenge is what BeginPasskeyLogin returns. PublicKey is the
+// WebAuthn PublicKeyCredentialRequestOptions exactly as the server sent
+// them, for the application's platform authenticator; CeremonyID is quoted
+// back to FinishPasskeyLogin.
+type PasskeyLoginChallenge struct {
+	PublicKey  json.RawMessage
+	CeremonyID string
 }
 
-// PasskeyAssertion is the WebAuthn assertion the user's authenticator
-// returns, passed back to FinishPasskeyAuth.
+// PasskeyRegistrationChallenge is what BeginPasskeyRegistration returns: the
+// WebAuthn PublicKeyCredentialCreationOptions as sent, and the ceremony id
+// FinishPasskeyRegistration quotes.
+type PasskeyRegistrationChallenge struct {
+	PublicKey  json.RawMessage
+	CeremonyID string
+}
+
+// PasskeyAssertion is the PublicKeyCredential the authenticator returned for
+// a login, as its JSON gives it: every value a base64url string, passed
+// through unchanged. ClientDataJSON, AuthenticatorData, Signature and
+// UserHandle are its response.* fields; Type is "public-key".
 type PasskeyAssertion struct {
-	CredentialID      []byte `json:"credential_id"`
-	AuthenticatorData []byte `json:"authenticator_data"`
-	ClientDataJSON    []byte `json:"client_data_json"`
-	Signature         []byte `json:"signature"`
-	UserHandle        []byte `json:"user_handle,omitempty"`
+	ID                string
+	RawID             string
+	Type              string
+	ClientDataJSON    string
+	AuthenticatorData string
+	Signature         string
+	UserHandle        string
+}
+
+// PasskeyAttestation is the PublicKeyCredential the authenticator returned
+// for a registration (navigator.credentials.create), as its JSON gives it.
+type PasskeyAttestation struct {
+	ID                string
+	RawID             string
+	Type              string
+	ClientDataJSON    string
+	AttestationObject string
 }
