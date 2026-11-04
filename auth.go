@@ -137,6 +137,39 @@ func (c *Client) FinishPasskeyRegistration(ctx context.Context, ceremonyID strin
 	return resp.CredentialID, nil
 }
 
+// RemovePasskey removes one of the person's own passkeys (CULPER-472):
+// DELETE /sdk/v1/auth/passkey/credentials/{credential_id} on the session
+// token. credentialID is the base64url id FinishPasskeyRegistration
+// returned; it is path-safe as it stands and is sent unchanged. The server
+// ends every other session that passkey issued at once. Removing the passkey
+// this session was issued with is allowed: this session keeps running until
+// its next renewal, which is then refused (ErrInvalidSession) and the person
+// signs in with another passkey. A person may remove their last passkey; the
+// installation's operator enrols a new one on the Management API.
+//
+// Like a POST, the call is not sent again once it reached the server
+// (retry.go): had the first one removed the passkey, a repeat would answer
+// 404 for a success.
+//
+// No passkey with that id belonging to this person (an unknown id and
+// someone else's alike) is ErrPasskeyNotFound; under an API-key session,
+// which names an organisation and not a person, the server answers 403
+// FORBIDDEN, an *APIError.
+func (c *Client) RemovePasskey(ctx context.Context, credentialID string) error {
+	if c.IsClosed() {
+		return ErrClientClosed
+	}
+	if credentialID == "" {
+		return errors.New("culperlink: credential id required (the id FinishPasskeyRegistration returned)")
+	}
+	err := c.doRequest(ctx, http.MethodDelete, "/sdk/v1/auth/passkey/credentials/"+credentialID, nil, nil)
+	var api *APIError
+	if errors.As(err, &api) && api.StatusCode == http.StatusNotFound && api.Code == "NOT_FOUND" {
+		return fmt.Errorf("%w: %w", ErrPasskeyNotFound, api)
+	}
+	return err
+}
+
 // publicPost is a POST with no credential to Options.Endpoint under the
 // retry policy: the public begin-login route.
 func (c *Client) publicPost(ctx context.Context, path string, body []byte, out any) error {

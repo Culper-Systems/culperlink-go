@@ -27,8 +27,11 @@ const (
 	pkFinishLogin = "/sdk/v1/auth/passkey/finish-login"
 	pkBeginReg    = "/sdk/v1/auth/passkey/begin-registration"
 	pkFinishReg   = "/sdk/v1/auth/passkey/finish-registration"
-	pkCeremonyID  = "1n5mAq3vCq8k2b7rX0dM9w"
-	pkPublicKey   = `{"challenge":"q2Xf0vJ5yQ0qkz1o3Jt0sQ","timeout":120000,"rpId":"culperlink.internal.example","userVerification":"required"}`
+	// pkRemove names a credential by the unpadded base64url id
+	// finish-registration returned (CULPER-472).
+	pkRemove     = "/sdk/v1/auth/passkey/credentials/Y3JlZC0y"
+	pkCeremonyID = "1n5mAq3vCq8k2b7rX0dM9w"
+	pkPublicKey  = `{"challenge":"q2Xf0vJ5yQ0qkz1o3Jt0sQ","timeout":120000,"rpId":"culperlink.internal.example","userVerification":"required"}`
 )
 
 var pkAssertion = &PasskeyAssertion{
@@ -53,13 +56,36 @@ type pkServer struct {
 	headers map[string][]http.Header
 	// finish, when set, answers finish-login instead of issuing a pair.
 	finish func(w http.ResponseWriter)
+	// remove answers DELETE on a credential; nil answers 204.
+	remove  func(w http.ResponseWriter)
+	methods map[string][]string
+	rawPath map[string][]string
 }
 
 func installPasskeys(cp *fakeCP) *pkServer {
-	s := &pkServer{bodies: map[string][]string{}, headers: map[string][]http.Header{}}
+	s := &pkServer{bodies: map[string][]string{}, headers: map[string][]http.Header{}, methods: map[string][]string{}, rawPath: map[string][]string{}}
 	cp.setOverride(func(w http.ResponseWriter, r *http.Request) bool {
-		switch r.URL.Path {
-		case pkBeginLogin, pkFinishLogin, pkBeginReg, pkFinishReg:
+		switch {
+		case r.URL.Path == pkBeginLogin, r.URL.Path == pkFinishLogin, r.URL.Path == pkBeginReg, r.URL.Path == pkFinishReg:
+		case strings.HasPrefix(r.URL.Path, pkCredentialsPrefix):
+			b, _ := io.ReadAll(r.Body)
+			s.mu.Lock()
+			s.bodies[r.URL.Path] = append(s.bodies[r.URL.Path], string(b))
+			s.headers[r.URL.Path] = append(s.headers[r.URL.Path], r.Header.Clone())
+			s.methods[r.URL.Path] = append(s.methods[r.URL.Path], r.Method)
+			s.rawPath[r.URL.Path] = append(s.rawPath[r.URL.Path], r.URL.EscapedPath())
+			remove := s.remove
+			s.mu.Unlock()
+			if !cp.bearer(r) {
+				apiErr(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid session")
+				return true
+			}
+			if remove != nil {
+				remove(w)
+				return true
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return true
 		default:
 			return false
 		}
@@ -94,6 +120,14 @@ func installPasskeys(cp *fakeCP) *pkServer {
 		return true
 	})
 	return s
+}
+
+const pkCredentialsPrefix = "/sdk/v1/auth/passkey/credentials/"
+
+func (s *pkServer) count(path string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.bodies[path])
 }
 
 func (s *pkServer) last(path string) (string, http.Header) {
@@ -341,6 +375,121 @@ func TestPasskeyRegistrationUnderAnAPIKeySessionIsTheServers403(t *testing.T) {
 	var api *APIError
 	if !errors.As(err, &api) || api.StatusCode != http.StatusForbidden || api.Code != "FORBIDDEN" {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRemovePasskeySendsDeleteOnTheSessionToken(t *testing.T) {
+	cp := newFakeCP(t)
+	s := installPasskeys(cp)
+	c := passkeyClient(t, cp, "")
+	signIn(t, c)
+	if err := c.RemovePasskey(context.Background(), "Y3JlZC0y"); err != nil {
+		t.Fatalf("RemovePasskey: %v", err)
+	}
+	s.mu.Lock()
+	methods := s.methods[pkRemove]
+	s.mu.Unlock()
+	if len(methods) != 1 || methods[0] != http.MethodDelete {
+		t.Fatalf("methods = %v, want one DELETE", methods)
+	}
+	body, h := s.last(pkRemove)
+	if body != "" || h.Get("Authorization") != "Bearer st-1" {
+		t.Fatalf("body %q, Authorization %q", body, h.Get("Authorization"))
+	}
+	// The current session carries on: removal ends nothing on this side.
+	if c.CurrentSession() == nil {
+		t.Fatal("the session was dropped")
+	}
+}
+
+func TestRemovePasskeySendsTheIDUnchanged(t *testing.T) {
+	cp := newFakeCP(t)
+	s := installPasskeys(cp)
+	c := passkeyClient(t, cp, "")
+	signIn(t, c)
+	if err := c.RemovePasskey(context.Background(), "ab-_Cd0"); err != nil {
+		t.Fatal(err)
+	}
+	const path = pkCredentialsPrefix + "ab-_Cd0"
+	s.mu.Lock()
+	raw := s.rawPath[path]
+	s.mu.Unlock()
+	if len(raw) != 1 || raw[0] != path {
+		t.Fatalf("raw paths = %v, want [%s]", raw, path)
+	}
+}
+
+func TestRemovePasskeyRefusalsAreTyped(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     int
+		code, msg  string
+		notFound   bool
+		wantStatus int
+	}{
+		{"unknown or someone else's", http.StatusNotFound, "NOT_FOUND", "passkey not found", true, 404},
+		{"api-key session", http.StatusForbidden, "FORBIDDEN", "passkey removal needs a passkey-issued session", false, 403},
+		{"malformed id", http.StatusBadRequest, "VALIDATION_ERROR", "bad id", false, 400},
+		{"passkeys off", http.StatusServiceUnavailable, "PASSKEYS_NOT_CONFIGURED", "passkeys are not configured", false, 503},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := newFakeCP(t)
+			s := installPasskeys(cp)
+			s.remove = func(w http.ResponseWriter) { apiErr(w, tc.status, tc.code, tc.msg) }
+			c := passkeyClient(t, cp, "")
+			signIn(t, c)
+			err := c.RemovePasskey(context.Background(), "Y3JlZC0y")
+			if got := errors.Is(err, ErrPasskeyNotFound); got != tc.notFound {
+				t.Fatalf("errors.Is(%v, ErrPasskeyNotFound) = %v, want %v", err, got, tc.notFound)
+			}
+			var api *APIError
+			if !errors.As(err, &api) || api.StatusCode != tc.wantStatus || api.Code != tc.code {
+				t.Fatalf("err = %v, want an *APIError %d %s", err, tc.wantStatus, tc.code)
+			}
+			if s.count(pkRemove) != 1 {
+				t.Fatalf("sent %d times, want 1", s.count(pkRemove))
+			}
+		})
+	}
+}
+
+// A NOT_FOUND from any other route is not ErrPasskeyNotFound: the sentinel
+// is the removal's answer, not the code's.
+func TestErrPasskeyNotFoundIsNotEveryNotFound(t *testing.T) {
+	err := error(&APIError{StatusCode: http.StatusNotFound, Code: "NOT_FOUND", Message: "x"})
+	if errors.Is(err, ErrPasskeyNotFound) {
+		t.Fatal("a bare NOT_FOUND matched ErrPasskeyNotFound")
+	}
+}
+
+func TestRemovePasskeyIsNotSentAgainAfterA5xx(t *testing.T) {
+	cp := newFakeCP(t)
+	s := installPasskeys(cp)
+	s.remove = func(w http.ResponseWriter) { w.WriteHeader(http.StatusBadGateway) }
+	c := passkeyClient(t, cp, "")
+	signIn(t, c)
+	if err := c.RemovePasskey(context.Background(), "Y3JlZC0y"); err == nil {
+		t.Fatal("RemovePasskey succeeded on a 502")
+	}
+	if n := s.count(pkRemove); n != 1 {
+		t.Fatalf("sent %d times, want 1", n)
+	}
+}
+
+func TestRemovePasskeyRefusesAnEmptyIDBeforeSending(t *testing.T) {
+	cp := newFakeCP(t)
+	s := installPasskeys(cp)
+	c := passkeyClient(t, cp, "")
+	err := c.RemovePasskey(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "credential id required") {
+		t.Fatalf("err = %v", err)
+	}
+	s.mu.Lock()
+	n := len(s.bodies)
+	s.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d routes reached", n)
 	}
 }
 
