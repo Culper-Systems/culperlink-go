@@ -108,6 +108,16 @@ var (
 	// called.
 	ErrPasskeyDeclined = errors.New("culperlink: passkey refused")
 
+	// ErrPasskeyNotFound is returned by RemovePasskey when no passkey with
+	// that id belongs to the person the session names: NOT_FOUND (HTTP 404)
+	// from DELETE /sdk/v1/auth/passkey/credentials/{credential_id}
+	// (CULPER-472). The server gives the same answer whether the id is
+	// unknown or is someone else's, so the surface never says whether a
+	// credential exists. A second removal of the same id returns it. The
+	// *APIError is reachable through errors.As. Only RemovePasskey wraps its
+	// refusal in it: a NOT_FOUND from any other route does not match.
+	ErrPasskeyNotFound = errors.New("culperlink: no such passkey for this person")
+
 	// ErrSovereignNodeUnavailable is returned when no compliant node can be
 	// tunnelled to: gateway selection answered GATEWAY_UNAVAILABLE, or every
 	// candidate it offered was offline or outside the geofence this client

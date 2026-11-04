@@ -27,6 +27,11 @@ release this library is published with; the tag is `v<version>`.
   application's platform authenticator runs it.
 - A payload request the node answers 409 (the tunnel changed tenant,
   CULPER-467) tears the tunnel down, connects afresh and is sent once more.
+- `RemovePasskey(ctx, credentialID)` (CULPER-472): a person removes one of
+  their own passkeys, named by the id `FinishPasskeyRegistration` returned,
+  under a passkey-issued session. `ErrPasskeyNotFound` when no passkey with
+  that id is theirs; the installation ends every other session that passkey
+  issued, and the current session runs until its next renewal.
 - `APIError.Reason`: the server's refusal class on `INVALID_PASSKEY` (CULPER-468; `no_organization` and `credential_retired` added by CULPER-469), declared so the error envelope decodes field for field; empty on every other code.
 
 The Go SDK's first release from its own repository (CULPER-452).
