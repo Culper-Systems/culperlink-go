@@ -429,7 +429,7 @@ func TestRemovePasskeyRefusalsAreTyped(t *testing.T) {
 	}{
 		{"unknown or someone else's", http.StatusNotFound, "NOT_FOUND", "passkey not found", true, 404},
 		{"api-key session", http.StatusForbidden, "FORBIDDEN", "passkey removal needs a passkey-issued session", false, 403},
-		{"malformed id", http.StatusBadRequest, "VALIDATION_ERROR", "bad id", false, 400},
+		{"malformed id", http.StatusUnprocessableEntity, "VALIDATION_ERROR", "bad id", false, 422},
 		{"passkeys off", http.StatusServiceUnavailable, "PASSKEYS_NOT_CONFIGURED", "passkeys are not configured", false, 503},
 	}
 	for _, tc := range cases {
