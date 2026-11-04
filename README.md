@@ -174,6 +174,12 @@ if errors.Is(err, culperlink.ErrPasskeyDeclined) && errors.As(err, &apiErr) {
   passkey for the person a passkey session names. Under an API-key session
   the installation refuses them (`FORBIDDEN`, 403). A person's first passkey
   is enrolled by the installation's operator on the Management API.
+- `RemovePasskey(ctx, credentialID)` removes one of the person's own
+  passkeys, named by the id `FinishPasskeyRegistration` returned; an unknown
+  id, or one that is not this person's, matches `ErrPasskeyNotFound`. The
+  server ends every other session that passkey issued; removing the one the
+  current session came from leaves this session running until its next
+  renewal, which returns `ErrInvalidSession`.
 
 ## Errors
 
@@ -192,6 +198,7 @@ gives the service's code and HTTP status.
 | `ErrInvalidSession` | `UNAUTHORIZED` (401) | the key or the session was refused. The library does not sign in again on its own |
 | `ErrMissingAPIKey` | none | no `APIKey` and no passkey sign-in yet |
 | `ErrPasskeyDeclined` | `INVALID_PASSKEY` (401) | the installation refused the passkey; `APIError.Reason` gives the class when there is one |
+| `ErrPasskeyNotFound` | `NOT_FOUND` (404) | `RemovePasskey` named no passkey of this person's (unknown, someone else's, or already removed) |
 | `ErrAPIKeyExpired` | `API_KEY_EXPIRED` (403) | the key is past its expiry: renew it; retrying will not help |
 | `ErrLicenceExpired` | `LICENCE_EXPIRED` (403) | your installation's licence has lapsed: the key may be fine, and the installation's operator renews the licence |
 | `ErrRateLimited` | `RATE_LIMITED` (429) | you are over your rate limit. `APIError.RetryAfter` says how long to wait |
