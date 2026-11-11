@@ -8,8 +8,8 @@ import (
 // Session is an authenticated session, returned for inspection. Neither token
 // is exposed.
 //
-// There is no customer or organisation field, deliberately: the service would
-// have to disclose the organisation's identifier to fill it, and a client
+// There is no customer or organization field, deliberately: the service would
+// have to disclose the organization's identifier to fill it, and a client
 // that holds one tends to echo it back. Tier says what this caller may do,
 // not who it is.
 type Session struct {
@@ -55,7 +55,7 @@ type EncryptedPayload struct {
 	KeyID              string `json:"key_id"`
 	AAD                []byte `json:"aad,omitempty"`
 	// CUIMarking is the Controlled Unclassified Information marking the
-	// service sealed the payload under — the organisation's default, or a
+	// service sealed the payload under — the organization's default, or a
 	// stronger one the request asked for — and "" for none. It is bound into
 	// the associated data: Decrypt sends it back, and a payload whose marking
 	// was stripped or changed does not decrypt.
@@ -109,7 +109,7 @@ type GatewayDescriptor struct {
 	ScoreHealth    float64 `json:"score_health"`
 }
 
-// TunnelPolicy is the organisation's traffic policy as gateway selection
+// TunnelPolicy is the organization's traffic policy as gateway selection
 // returns it: which prefixes ride the tunnel and where DNS goes. Absent means
 // node_only with the host's DNS. It is passed to the daemon, which enforces
 // it.

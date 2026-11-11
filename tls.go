@@ -4,7 +4,7 @@ package culperlink
 //
 // WHY THIS EXISTS. CulperLink is a customer-operated product: the service the
 // SDK talks to is the customer's own installation, presenting the customer's
-// own certificate. Defence and regulated customers routinely issue those
+// own certificate. Defense and regulated customers routinely issue those
 // certificates from an internal CA that is not in any public trust store, so
 // "use the system roots" is not a usable default for them.
 //

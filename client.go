@@ -222,7 +222,7 @@ type target struct {
 	client *http.Client
 	// tunnelled is true when the attempt goes through the daemon's proxy, so
 	// a failure is reported to the daemon and the proxy's own answers are
-	// recognised.
+	// recognized.
 	tunnelled bool
 }
 

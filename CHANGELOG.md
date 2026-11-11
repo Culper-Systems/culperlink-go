@@ -65,21 +65,21 @@ The Go SDK's first release from its own repository (CULPER-452).
   - wire types match the server exactly: `LatencyMillis` and the
     per-candidate `TunnelPolicy` are gone, the four `Score*` fields and
     `AttestedAt` are present (G-20, G-33);
-  - new `ErrLicenceExpired` (G-13) and `ErrAuditLogNotServed`, returned by
+  - new `ErrLicenseExpired` (G-13) and `ErrAuditLogNotServed`, returned by
     `AuditLog` because no `/sdk/v1` route serves an audit view (G-10);
   - the library is a runner in CulperLink's conformance suite and its
     end-to-end test runs in that repository's CI (G-7).
 - CUI marking is the service's, bound into the ciphertext (CulperLink
   CULPER-462, owner decision 22). `TagPayload` now sends its marking as the
   encrypt request's `cui_marking`; the service seals the payload under the
-  stronger of it and the organisation's default marking (set by the
+  stronger of it and the organization's default marking (set by the
   installation's operator) and returns the marking it applied, which
   `EncryptedPayload.CUIMarking` now carries. `Encrypt` sends none, so the
   default applies. The marking is in the payload's associated data:
   `Decrypt` sends it back with the new `EncryptedPayload.PayloadVersion`
   (2), and a payload whose marking was stripped or changed matches
   `ErrDecryptionFailed`. The service refuses payload format version 1 by
-  name. All nineteen recognised markings are constants;
+  name. All nineteen recognized markings are constants;
   `RequiresSovereignNode` answers per marking (true only for SP-CTI,
   SP-EXPT, SP-NUC, SP-NNPI, SP-INTEL, SP-LEI, SP-ECI and SP-CRIT); the
   client-side geofence covers SP-ECI (ITAR) and SP-NNPI and SP-INTEL
@@ -90,7 +90,7 @@ The Go SDK's first release from its own repository (CULPER-452).
     written, or when it is a `GET` that met a 502, 504, a code-less 503 or a
     timeout. A `POST` that was sent is never sent again, so `Attest` no
     longer writes duplicate records and a refused gateway selection is
-    recorded once. The rate limiter's `Retry-After` is honoured once per call
+    recorded once. The rate limiter's `Retry-After` is honored once per call
     when it is ten seconds or less. A 503 with a service code is final. The
     "respects Retry-After" and "retry budget is spent" sentences are now
     true or gone. A request that met a dead tunnel is no longer resent in the

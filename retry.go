@@ -32,7 +32,7 @@ package culperlink
 //     is the node's, and sent.
 //  4. A 429 RATE_LIMITED, or a 503 RATE_LIMIT_UNAVAILABLE, is answered by
 //     the rate limiter before any handler runs, so the server did nothing.
-//     Its Retry-After is honoured once per call, any method: when it is
+//     Its Retry-After is honored once per call, any method: when it is
 //     between one second and retryAfterCap, the client waits that long and
 //     sends once more. A longer wait, a missing one, or a second such answer
 //     is returned as the error, carrying APIError.RetryAfter. This resend is
@@ -229,7 +229,7 @@ func transientStatus(resp *http.Response) bool {
 func transportClass(err error) string {
 	switch {
 	case errors.Is(err, context.Canceled):
-		return "cancelled"
+		return "canceled"
 	case errors.Is(err, context.DeadlineExceeded), isTimeout(err):
 		return "timeout"
 	case errors.Is(err, syscall.ECONNREFUSED):

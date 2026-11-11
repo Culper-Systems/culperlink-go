@@ -109,7 +109,7 @@ func servePayload(w http.ResponseWriter, r *http.Request, v *violations, validTo
 	// The fake binds the marking and the channel the way the server's
 	// associated data does (payload format version 2): into what decrypt
 	// checks, here the reserved ephemeral key field. It applies no
-	// organisation default; the marking sent is the marking sealed.
+	// organization default; the marking sent is the marking sealed.
 	if r.URL.Path == "/sdk/v1/encrypt" {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ciphertext":           body["payload"],
