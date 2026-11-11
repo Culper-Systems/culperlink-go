@@ -225,7 +225,7 @@ func transientStatus(resp *http.Response) bool {
 }
 
 // transportClass names a transport failure without its text, which carries
-// the URL and the dialled address.
+// the URL and the dialed address.
 func transportClass(err error) string {
 	switch {
 	case errors.Is(err, context.Canceled):

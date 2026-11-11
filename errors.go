@@ -119,7 +119,7 @@ var (
 	ErrPasskeyNotFound = errors.New("culperlink: no such passkey for this person")
 
 	// ErrSovereignNodeUnavailable is returned when no compliant node can be
-	// tunnelled to: gateway selection answered GATEWAY_UNAVAILABLE, or every
+	// tunneled to: gateway selection answered GATEWAY_UNAVAILABLE, or every
 	// candidate it offered was offline or outside the geofence this client
 	// re-applies.
 	ErrSovereignNodeUnavailable = errors.New("culperlink: no compliant sovereign node available")

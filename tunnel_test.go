@@ -483,7 +483,7 @@ func TestDaemonRepliesNamingAnAddressAreWithheld(t *testing.T) {
 // A sent encrypt that timed out through the daemon is the timeout itself, not
 // ErrTunnelUnavailable, it is not sent again (retry.go, rule 3), and its text
 // names no address.
-func TestTunnelledTimeoutIsATimeoutAndNotResent(t *testing.T) {
+func TestTunneledTimeoutIsATimeoutAndNotResent(t *testing.T) {
 	skipWithoutUnixSockets(t)
 	countPauses(t)
 	cp := newFakeCP(t)

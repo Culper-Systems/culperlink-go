@@ -745,7 +745,7 @@ func (ts *tunnelState) establish(ctx context.Context, c *Client) (*target, error
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
 	}
-	t := &target{base: base, client: &http.Client{Transport: tr, Timeout: ts.timeout}, tunnelled: true}
+	t := &target{base: base, client: &http.Client{Transport: tr, Timeout: ts.timeout}, tunneled: true}
 
 	ts.mu.Lock()
 	ts.gateway = gw
