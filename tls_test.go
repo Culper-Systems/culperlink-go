@@ -166,7 +166,7 @@ func (ca *internalCA) issue(t *testing.T) tls.Certificate {
 }
 
 // startInternalCAServer stands up a TLS server presenting a certificate issued
-// by an internal CA — the shape a self-hosted defence customer actually runs,
+// by an internal CA — the shape a self-hosted defense customer actually runs,
 // and one no public trust store will accept.
 func startInternalCAServer(t *testing.T, ca *internalCA) *httptest.Server {
 	t.Helper()

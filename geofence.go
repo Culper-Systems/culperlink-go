@@ -14,16 +14,16 @@ package culperlink
 // DEFAULT constraints — US only for any marking; the ITAR-proscribed list
 // excluded for SP-CTI, SP-EXPT and SP-ECI; GovCloud regions for SP-CTI,
 // SP-NUC, SP-NNPI and SP-INTEL. Not mirrored: what the client cannot know —
-// the organisation's default marking (the server routes under the stronger
+// the organization's default marking (the server routes under the stronger
 // of it and the client's, so the server's fence is the tighter one), the
 // sovereign pool's regions, and the operator's per-marking overrides. An
 // override can loosen a marking — widen its countries, lift GovCloud — and
 // then this check is stricter than the server's and refuses a candidate the
 // server offered. That direction fails closed: the call reports
 // ErrSovereignNodeUnavailable rather than sending the marking somewhere its
-// defaults forbid. A client of an organisation with such an override should
+// defaults forbid. A client of an organization with such an override should
 // not name the overridden marking in TunnelOptions.CUIMarking; the
-// organisation's default still applies.
+// organization's default still applies.
 
 import "slices"
 

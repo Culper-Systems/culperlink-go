@@ -25,7 +25,7 @@ type sessionState struct {
 	// byPasskey is set when the pair came from a passkey sign-in
 	// (CULPER-469). Such a session is renewed and never replaced by an
 	// API-key exchange, and stays set after the session ends so a later call
-	// fails rather than signing in as the organisation; see auth.go.
+	// fails rather than signing in as the organization; see auth.go.
 	byPasskey bool
 
 	current         *Session
@@ -44,7 +44,7 @@ type sessionState struct {
 	renewalCapped bool
 	cappedMargin  time.Duration
 
-	// refreshMu serialises renew/authenticate, so one renewal does not
+	// refreshMu serializes renew/authenticate, so one renewal does not
 	// become a herd of API-key exchanges (renewal is single-winner on the
 	// service).
 	refreshMu sync.Mutex
@@ -69,7 +69,7 @@ func (s *sessionState) fresh() bool {
 // ensureAuthenticated guarantees a usable pair, renewing near expiry (which
 // presents session_token, never the API key) and falling back to the API-key
 // exchange when renewal fails for any reason — except for a passkey-issued
-// session, which is a person's and is never replaced by the organisation's
+// session, which is a person's and is never replaced by the organization's
 // API key (auth.go).
 func (s *sessionState) ensureAuthenticated(ctx context.Context, c *Client) error {
 	if s.fresh() {
@@ -121,7 +121,7 @@ func (s *sessionState) ensureAuthenticated(ctx context.Context, c *Client) error
 var errNotSignedIn = fmt.Errorf("%w: not signed in: set Options.APIKey, or sign in with a passkey (BeginPasskeyLogin, then FinishPasskeyLogin)", ErrMissingAPIKey)
 
 // signInWithPasskey posts a finish-login body and installs the pair it
-// returns, serialised with renewal and the API-key exchange so a sign-in
+// returns, serialized with renewal and the API-key exchange so a sign-in
 // never interleaves with another token install.
 func (s *sessionState) signInWithPasskey(ctx context.Context, c *Client, body []byte) error {
 	s.refreshMu.Lock()

@@ -483,7 +483,7 @@ func TestDaemonRepliesNamingAnAddressAreWithheld(t *testing.T) {
 // A sent encrypt that timed out through the daemon is the timeout itself, not
 // ErrTunnelUnavailable, it is not sent again (retry.go, rule 3), and its text
 // names no address.
-func TestTunnelledTimeoutIsATimeoutAndNotResent(t *testing.T) {
+func TestTunneledTimeoutIsATimeoutAndNotResent(t *testing.T) {
 	skipWithoutUnixSockets(t)
 	countPauses(t)
 	cp := newFakeCP(t)
@@ -509,7 +509,7 @@ func TestTunnelledTimeoutIsATimeoutAndNotResent(t *testing.T) {
 }
 
 // GATEWAY_SELECTION_NOT_CONFIGURED is the installation's deployment, not
-// the organisation's policy: ErrSelectionNotConfigured, never the sovereign
+// the organization's policy: ErrSelectionNotConfigured, never the sovereign
 // error, and selection is asked once (G-32).
 func TestSelectionNotConfiguredIsItsOwnError(t *testing.T) {
 	skipWithoutUnixSockets(t)
@@ -739,7 +739,7 @@ func TestMissingDaemonNamesTheSearchOrder(t *testing.T) {
 }
 
 // TestPolicyIPv6ReachesTheDaemon is CULPER-460 G-4: the policy's ipv6 flag is
-// carried to the daemon. Without it a full+IPv6 organisation's node offers
+// carried to the daemon. Without it a full+IPv6 organization's node offers
 // ::/0, the daemon plans IPv4 only and refuses the offer, and the client
 // cannot connect.
 func TestPolicyIPv6ReachesTheDaemon(t *testing.T) {

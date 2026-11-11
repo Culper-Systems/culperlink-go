@@ -551,7 +551,7 @@ type tunnelState struct {
 	roots   []byte
 	timeout time.Duration
 
-	// connectMu serialises select-and-establish so concurrent first calls
+	// connectMu serializes select-and-establish so concurrent first calls
 	// produce one tunnel. renewLease and status never take it, because
 	// selection's own Control Plane call may rotate the token pair and
 	// renew the lease while it is held.
@@ -745,7 +745,7 @@ func (ts *tunnelState) establish(ctx context.Context, c *Client) (*target, error
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
 	}
-	t := &target{base: base, client: &http.Client{Transport: tr, Timeout: ts.timeout}, tunnelled: true}
+	t := &target{base: base, client: &http.Client{Transport: tr, Timeout: ts.timeout}, tunneled: true}
 
 	ts.mu.Lock()
 	ts.gateway = gw
@@ -1005,7 +1005,7 @@ func (c *Client) selectGateways(ctx context.Context) ([]GatewayDescriptor, *daem
 			case api.Code == "GATEWAY_UNAVAILABLE":
 				return nil, nil, fmt.Errorf("%w: %w", ErrSovereignNodeUnavailable, api)
 			case api.Code == codeSelectionNotConfigured:
-				// The installation's deployment, not the organisation's
+				// The installation's deployment, not the organization's
 				// policy (G-32): its own sentinel, not the sovereign one.
 				return nil, nil, fmt.Errorf("%w (set Options.Tunnel.Mode = TunnelOff for an installation that serves encrypt itself): %w",
 					ErrSelectionNotConfigured, api)
@@ -1031,8 +1031,8 @@ func (c *Client) selectGateways(ctx context.Context) ([]GatewayDescriptor, *daem
 	if len(kept) == 0 {
 		return nil, nil, fmt.Errorf("%w: the candidate list is empty after the geofence", ErrSovereignNodeUnavailable)
 	}
-	// The organisation's policy is on the envelope and nowhere else: it is
-	// the organisation's, not a node's.
+	// The organization's policy is on the envelope and nowhere else: it is
+	// the organization's, not a node's.
 	return kept, policyForDaemon(resp.TunnelPolicy), nil
 }
 

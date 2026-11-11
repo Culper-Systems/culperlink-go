@@ -220,10 +220,10 @@ func (c *Client) doControlRequestWithDataToken(ctx context.Context, method, path
 type target struct {
 	base   string
 	client *http.Client
-	// tunnelled is true when the attempt goes through the daemon's proxy, so
+	// tunneled is true when the attempt goes through the daemon's proxy, so
 	// a failure is reported to the daemon and the proxy's own answers are
-	// recognised.
-	tunnelled bool
+	// recognized.
+	tunneled bool
 }
 
 // send is the one request path every plane goes through, under the retry
@@ -236,9 +236,9 @@ func (c *Client) send(ctx context.Context, p plane, method, path string, body []
 		return err
 	}
 
-	tunnelled := p == dataPlane && c.tunnel != nil
+	tunneled := p == dataPlane && c.tunnel != nil
 	for reconnected := false; ; reconnected = true {
-		resp, again, err := c.sendOnce(ctx, p, tunnelled, method, path, body)
+		resp, again, err := c.sendOnce(ctx, p, tunneled, method, path, body)
 		if again && !reconnected {
 			// The node's "this tunnel changed tenant" (CULPER-467, decision
 			// 38): the data_token now resolves to another key lineage than
@@ -260,12 +260,12 @@ func (c *Client) send(ctx context.Context, p plane, method, path string, body []
 
 // sendOnce is one call under the retry policy. again is true when the node
 // answered 409 through the tunnel: resp is that answer, unread.
-func (c *Client) sendOnce(ctx context.Context, p plane, tunnelled bool, method, path string, body []byte) (resp *http.Response, again bool, err error) {
+func (c *Client) sendOnce(ctx context.Context, p plane, tunneled bool, method, path string, body []byte) (resp *http.Response, again bool, err error) {
 	proxyFailed := false
 	resp, err = c.roundTrip(ctx, method, func(actx context.Context, track func(*http.Request) *http.Request) (*http.Response, error) {
 		proxyFailed = false
 		tgt := target{base: c.opts.Endpoint, client: c.httpClient}
-		if tunnelled {
+		if tunneled {
 			// Decided per attempt: a tunnel the daemon gave up on between
 			// attempts is re-selected and re-established here.
 			t, err := c.tunnel.ensure(actx, c)
@@ -282,7 +282,7 @@ func (c *Client) sendOnce(ctx context.Context, p plane, tunnelled bool, method, 
 			return nil, stopError{err}
 		}
 		resp, err := tgt.client.Do(track(req))
-		if !tgt.tunnelled {
+		if !tgt.tunneled {
 			return resp, err
 		}
 		if err != nil {
@@ -291,7 +291,7 @@ func (c *Client) sendOnce(ctx context.Context, p plane, tunnelled bool, method, 
 		}
 		switch readProxyAnswer(resp) {
 		case proxyRefusedNotSent:
-			// The proxy dialled nothing (CULPER-467): rule 1, whatever the
+			// The proxy dialed nothing (CULPER-467): rule 1, whatever the
 			// method. A 407 means the daemon's token changed under us; the
 			// transport is dropped so the next attempt reads it again.
 			if resp.StatusCode == http.StatusProxyAuthRequired {
@@ -314,13 +314,13 @@ func (c *Client) sendOnce(ctx context.Context, p plane, tunnelled bool, method, 
 		if errors.As(err, &tErr) || errors.Is(err, ErrSovereignNodeUnavailable) || errors.Is(err, ErrSelectionNotConfigured) {
 			return nil, false, err
 		}
-		if tunnelled && isTimeout(err) {
+		if tunneled && isTimeout(err) {
 			// A sent request that timed out is a timeout, not a tunnel
 			// failure: the node may have acted on it (retry.go, rule 3).
 			// The text names no address; the cause keeps Timeout().
 			return nil, false, &timeoutError{cause: err}
 		}
-		if tunnelled {
+		if tunneled {
 			// The transport's text names the node's tunnel address and the
 			// proxy's port; the caller gets the class (G-26).
 			return nil, false, &tunnelError{msg: "culperlink: tunnel unavailable: the tunnel could not carry the request (" + transportClass(err) + ")", cause: err}
@@ -331,7 +331,7 @@ func (c *Client) sendOnce(ctx context.Context, p plane, tunnelled bool, method, 
 		drainAndClose(resp)
 		return nil, false, tunnelUnavailable("the tunnel failed after the request was sent; it was not sent again")
 	}
-	return resp, tunnelled && resp.StatusCode == http.StatusConflict, nil
+	return resp, tunneled && resp.StatusCode == http.StatusConflict, nil
 }
 
 // setCredential attaches the plane's credential, and only that one.

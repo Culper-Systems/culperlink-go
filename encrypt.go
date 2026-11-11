@@ -28,7 +28,7 @@ import (
 // document or request id. The service binds it into the AEAD as additional
 // authenticated data, and Decrypt must be given the same value.
 //
-// Encrypt sends no CUI marking: the organisation's default marking, if its
+// Encrypt sends no CUI marking: the organization's default marking, if its
 // operator set one, is applied and reported in the result's CUIMarking.
 // TagPayload sends one.
 func (c *Client) Encrypt(ctx context.Context, payload []byte, sessionChannel string) (*EncryptedPayload, error) {

@@ -248,10 +248,10 @@ func TestPasskeyRefusalsAreTyped(t *testing.T) {
 	}{
 		{"replay", http.StatusUnauthorized, `{"code":"INVALID_PASSKEY","message":"passkey refused","reason":"sign_count_replay"}`, ErrPasskeyDeclined, "sign_count_replay"},
 		{"expired ceremony", http.StatusUnauthorized, `{"code":"INVALID_PASSKEY","message":"passkey refused","reason":"challenge_expired"}`, ErrPasskeyDeclined, "challenge_expired"},
-		{"no organisation", http.StatusUnauthorized, `{"code":"INVALID_PASSKEY","message":"passkey refused","reason":"no_organization"}`, ErrPasskeyDeclined, "no_organization"},
+		{"no organization", http.StatusUnauthorized, `{"code":"INVALID_PASSKEY","message":"passkey refused","reason":"no_organization"}`, ErrPasskeyDeclined, "no_organization"},
 		{"retired", http.StatusUnauthorized, `{"code":"INVALID_PASSKEY","message":"passkey refused","reason":"credential_retired"}`, ErrPasskeyDeclined, "credential_retired"},
 		{"bare", http.StatusUnauthorized, `{"code":"INVALID_PASSKEY","message":"passkey refused"}`, ErrPasskeyDeclined, ""},
-		{"licence", http.StatusForbidden, `{"code":"LICENCE_EXPIRED","message":"renew the licence"}`, ErrLicenceExpired, ""},
+		{"license", http.StatusForbidden, `{"code":"LICENSE_EXPIRED","message":"renew the license"}`, ErrLicenseExpired, ""},
 		{"rate limited", http.StatusTooManyRequests, `{"code":"RATE_LIMITED","message":"slow down","retry_after":60}`, ErrRateLimited, ""},
 	}
 	for _, tt := range tests {

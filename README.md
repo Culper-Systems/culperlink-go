@@ -170,7 +170,7 @@ if errors.Is(err, culperlink.ErrPasskeyDeclined) && errors.As(err, &apiErr) {
   swapped for an API-key session. When it can no longer be renewed (it was
   revoked, or reached its 12-hour cap) the call returns `ErrInvalidSession`:
   sign the person in again.
-- `BeginPasskeyRegistration` and `FinishPasskeyRegistration` enrol another
+- `BeginPasskeyRegistration` and `FinishPasskeyRegistration` enroll another
   passkey for the person a passkey session names. Under an API-key session
   the installation refuses them (`FORBIDDEN`, 403). A person's first passkey
   is enrolled by the installation's operator on the Management API.
@@ -200,7 +200,7 @@ gives the service's code and HTTP status.
 | `ErrPasskeyDeclined` | `INVALID_PASSKEY` (401) | the installation refused the passkey; `APIError.Reason` gives the class when there is one |
 | `ErrPasskeyNotFound` | `NOT_FOUND` (404) | `RemovePasskey` named no passkey of this person's (unknown, someone else's, or already removed) |
 | `ErrAPIKeyExpired` | `API_KEY_EXPIRED` (403) | the key is past its expiry: renew it; retrying will not help |
-| `ErrLicenceExpired` | `LICENCE_EXPIRED` (403) | your installation's licence has lapsed: the key may be fine, and the installation's operator renews the licence |
+| `ErrLicenseExpired` | `LICENSE_EXPIRED` (403) | your installation's license has lapsed: the key may be fine, and the installation's operator renews the license |
 | `ErrRateLimited` | `RATE_LIMITED` (429) | you are over your rate limit. `APIError.RetryAfter` says how long to wait |
 | `ErrRateLimitUnavailable` | `RATE_LIMIT_UNAVAILABLE` (503) | the installation could not count the request (its Redis is unreachable) and refused it. You did nothing wrong; `APIError.RetryAfter` says when to try again |
 
@@ -241,6 +241,6 @@ installation with no Data Plane node, and for Windows. An installation that
 serves a tunnel refuses payload calls on its public address, so this mode
 against one fails with a 404 rather than sending payloads the wrong way.
 
-## Licence
+## License
 
 See [LICENSE](LICENSE).

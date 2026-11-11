@@ -18,7 +18,7 @@ package culperlink
 //
 // A PERSON'S SESSION STAYS A PERSON'S. A passkey-issued session is renewed
 // with its session token, as any session is, and is never replaced by an
-// API-key exchange: the key names an organisation and the passkey a person,
+// API-key exchange: the key names an organization and the passkey a person,
 // and quietly swapping one for the other would change who the calls are made
 // as. When renewal is refused, or the session reaches its 12-hour cap, the
 // call returns ErrInvalidSession and the person signs in again.
@@ -59,7 +59,7 @@ func (c *Client) BeginPasskeyLogin(ctx context.Context) (*PasskeyLoginChallenge,
 //
 // A refused passkey is an *APIError matching ErrPasskeyDeclined, its Reason
 // the server's class (an unknown or expired ceremony is challenge_expired);
-// a lapsed installation licence matches ErrLicenceExpired.
+// a lapsed installation license matches ErrLicenseExpired.
 func (c *Client) FinishPasskeyLogin(ctx context.Context, ceremonyID string, assertion *PasskeyAssertion) (*Session, error) {
 	if c.IsClosed() {
 		return nil, ErrClientClosed
@@ -145,7 +145,7 @@ func (c *Client) FinishPasskeyRegistration(ctx context.Context, ceremonyID strin
 // this session was issued with is allowed: this session keeps running until
 // its next renewal, which is then refused (ErrInvalidSession) and the person
 // signs in with another passkey. A person may remove their last passkey; the
-// installation's operator enrols a new one on the Management API.
+// installation's operator enrolls a new one on the Management API.
 //
 // Like a POST, the call is not sent again once it reached the server
 // (retry.go): had the first one removed the passkey, a repeat would answer
@@ -153,7 +153,7 @@ func (c *Client) FinishPasskeyRegistration(ctx context.Context, ceremonyID strin
 //
 // No passkey with that id belonging to this person (an unknown id and
 // someone else's alike) is ErrPasskeyNotFound; under an API-key session,
-// which names an organisation and not a person, the server answers 403
+// which names an organization and not a person, the server answers 403
 // FORBIDDEN, an *APIError.
 func (c *Client) RemovePasskey(ctx context.Context, credentialID string) error {
 	if c.IsClosed() {
@@ -188,7 +188,7 @@ func (c *Client) publicPost(ctx context.Context, path string, body []byte, out a
 }
 
 // passkeyBeginResponse is the answer of begin-login and begin-registration:
-// the WebAuthn options as go-webauthn serialises them, carried untouched.
+// the WebAuthn options as go-webauthn serializes them, carried untouched.
 type passkeyBeginResponse struct {
 	PublicKey  json.RawMessage `json:"public_key"`
 	CeremonyID string          `json:"ceremony_id"`

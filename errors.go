@@ -79,7 +79,7 @@ var (
 	// or Decrypt, when the installation runs no gateway selection
 	// (GATEWAY_SELECTION_NOT_CONFIGURED, HTTP 503): it has no node registry,
 	// so no node can be offered to anyone. It is not
-	// ErrSovereignNodeUnavailable, which is the organisation's policy
+	// ErrSovereignNodeUnavailable, which is the organization's policy
 	// leaving no eligible node. The remedy is the installation's: deploy its
 	// node registry, or set Options.Tunnel.Mode = TunnelOff for an
 	// installation that serves encrypt itself.
@@ -91,19 +91,19 @@ var (
 	// remedy, and the APIError's Message names the route.
 	ErrAPIKeyExpired = errors.New("culperlink: API key expired — renew it")
 
-	// ErrLicenceExpired is returned when the installation's own licence has
-	// lapsed (LICENCE_EXPIRED, HTTP 403): the token exchange refuses before it
+	// ErrLicenseExpired is returned when the installation's own license has
+	// lapsed (LICENSE_EXPIRED, HTTP 403): the token exchange refuses before it
 	// reads the API key. Distinct from ErrAPIKeyExpired on purpose: the key
 	// may be perfectly good, renewing it changes nothing, and the remedy is
 	// the installation operator's. Sessions already issued run to their own
 	// expiry. The APIError's Message is the service's instruction.
-	ErrLicenceExpired = errors.New("culperlink: the installation's licence has expired")
+	ErrLicenseExpired = errors.New("culperlink: the installation's license has expired")
 
 	// ErrPasskeyDeclined matches the server's refusal of a passkey:
 	// INVALID_PASSKEY (HTTP 401) from FinishPasskeyLogin or
 	// FinishPasskeyRegistration. APIError.Reason carries the class when the
 	// server gives one; a bare refusal is also the answer for an unknown
-	// credential and a suspended account. A person cancelling in the
+	// credential and a suspended account. A person canceling in the
 	// platform authenticator is the platform's error, before this library is
 	// called.
 	ErrPasskeyDeclined = errors.New("culperlink: passkey refused")
@@ -119,7 +119,7 @@ var (
 	ErrPasskeyNotFound = errors.New("culperlink: no such passkey for this person")
 
 	// ErrSovereignNodeUnavailable is returned when no compliant node can be
-	// tunnelled to: gateway selection answered GATEWAY_UNAVAILABLE, or every
+	// tunneled to: gateway selection answered GATEWAY_UNAVAILABLE, or every
 	// candidate it offered was offline or outside the geofence this client
 	// re-applies.
 	ErrSovereignNodeUnavailable = errors.New("culperlink: no compliant sovereign node available")
@@ -222,8 +222,8 @@ func (e *APIError) Is(target error) bool {
 		return e.Code == "KEY_EPOCH_RETIRED"
 	case ErrAPIKeyExpired:
 		return e.Code == "API_KEY_EXPIRED"
-	case ErrLicenceExpired:
-		return e.Code == "LICENCE_EXPIRED"
+	case ErrLicenseExpired:
+		return e.Code == "LICENSE_EXPIRED"
 	case ErrPasskeyDeclined:
 		return e.Code == "INVALID_PASSKEY"
 	case ErrSovereignNodeUnavailable:
